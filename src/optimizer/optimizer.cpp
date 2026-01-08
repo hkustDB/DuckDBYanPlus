@@ -180,6 +180,9 @@ void Optimizer::RunBuiltInOptimizers() {
 
     auto start_time = std::chrono::high_resolution_clock::now();
 
+    std::cout << "Join order before\n";
+    plan->Print();
+
 #ifndef YANPLUS
     RunOptimizer(OptimizerType::JOIN_ORDER, [&]() {
 		JoinOrderOptimizer optimizer(context);
@@ -239,8 +242,8 @@ void Optimizer::RunBuiltInOptimizers() {
 			plan = optimizer2.CallSolveJoinOrderFixed(std::move(plan), BFOrder);
 		});
 		plan = PT.Optimize(std::move(plan));
-        std::cout << "2.1 select * plan result" << std::endl;
-        plan->Print();
+        // std::cout << "2.1 select * plan result" << std::endl;
+        // plan->Print();
 	} else if (query_type == QueryType::COUNT_STAR || query_type == QueryType::MINMAX_AGGREGATE || query_type == QueryType::SUM || query_type == QueryType::SELECT_DISTINCT) {
         unique_ptr<LogicalOperator> plan_copy = plan->Copy(context);
         // Step1: Copy the plan, and record the true agg apply node
@@ -477,7 +480,7 @@ unique_ptr<LogicalOperator> Optimizer::Optimize(unique_ptr<LogicalOperator> plan
 
     auto end_time = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
-    std::cout << "All optimization time: " << duration.count() << " microseconds" << std::endl;
+    // std::cout << "All optimization time: " << duration.count() << " microseconds" << std::endl;
 
 	return std::move(plan);
 }

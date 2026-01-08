@@ -365,9 +365,10 @@ tools/pythonpkg/duckdb_build/i
 
 # db store
 *_db*
-*.txt
+log*.txt
+time*.txt
 tpch_100/*
 job_agg_*/*
 lsqb_test/*
 test_tpch.sql
-
+*test*
