@@ -369,6 +369,5 @@ log*.txt
 time*.txt
 tpch_100/*
 job_agg_*/*
-lsqb_test/*
+*_test/*
 test_tpch.sql
-*test*
