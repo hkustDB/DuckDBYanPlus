@@ -25,7 +25,7 @@ BUILD_BENCHMARK=1 make # Build with benchmark support
 
 - **Parachute**: https://github.com/utndatasystems/parachute
 - **SYA**: https://github.com/UHasselt-DSI-Data-Systems-Lab/code-reproducability-yannakakis-vldb2025
-- **Yannakakis<sup>+</sup> (rewrite)**: https://github.com/hkustDB/Quorion
+- **Yannakakis<sup>+</sup> (rewrite)**: https://anonymous.4open.science/r/Yannakakis-Plus-rewrite
 
 ## Benchmark
 
