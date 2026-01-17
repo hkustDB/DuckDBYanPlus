@@ -21,7 +21,7 @@ BUILD_BENCHMARK=1 make # Build with benchmark support
 ## Baselines
 
 - **DuckDB v1.3.0**: [https://github.com/duckdb/duckdb/tree/v1.3-ossivalis](https://github.com/duckdb/duckdb/tree/v1.3-ossivalis)
-- **RPT (Robust Predicate Transfer)**: [[https://github.com/embryo-labs/Robust-Predicate-Transfer](https://github.com/embryo-labs/dynamic-predicate-transfer)]([https://github.com/embryo-labs/Robust-Predicate-Transfer](https://github.com/embryo-labs/dynamic-predicate-transfer))
+- **RPT (Robust Predicate Transfer)**: [https://github.com/embryo-labs/dynamic-predicate-transfer](https://github.com/embryo-labs/dynamic-predicate-transfer)
 
 - **Parachute**: https://github.com/utndatasystems/parachute
 - **SYA**: https://github.com/UHasselt-DSI-Data-Systems-Lab/code-reproducability-yannakakis-vldb2025
