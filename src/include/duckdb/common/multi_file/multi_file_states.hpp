@@ -84,6 +84,9 @@ struct MultiFileBindData : public TableFunctionData {
 	void Initialize(ClientContext &, BaseUnionData &union_data) {
 		Initialize(std::move(union_data.reader));
 	}
+	bool SupportStatementCache() const override {
+		return false;
+	}
 
 	unique_ptr<FunctionData> Copy() const override;
 };
@@ -163,8 +166,11 @@ struct MultiFileGlobalState : public GlobalTableFunctionState {
 	vector<LogicalType> scanned_types;
 	vector<ColumnIndex> column_indexes;
 	optional_ptr<TableFilterSet> filters;
+	atomic<bool> finished {false};
 
 	unique_ptr<GlobalTableFunctionState> global_state;
+
+	optional_ptr<const PhysicalOperator> op;
 
 	idx_t MaxThreads() const override {
 		return max_threads;

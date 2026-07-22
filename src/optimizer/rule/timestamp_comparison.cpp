@@ -5,6 +5,7 @@
 #include "duckdb/common/constants.hpp"
 #include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
+#include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression/bound_conjunction_expression.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
@@ -42,12 +43,9 @@ TimeStampComparison::TimeStampComparison(ClientContext &context, ExpressionRewri
 	root = std::move(op);
 }
 
-static void ExpressionIsConstant(Expression &expr, bool &is_constant) {
-	if (expr.GetExpressionType() == ExpressionType::BOUND_COLUMN_REF) {
-		is_constant = false;
-		return;
-	}
-	ExpressionIterator::EnumerateChildren(expr, [&](Expression &child) { ExpressionIsConstant(child, is_constant); });
+static void ExpressionIsConstant(const Expression &root_expr, bool &is_constant) {
+	ExpressionIterator::VisitExpression<BoundColumnRefExpression>(
+	    root_expr, [&](const BoundColumnRefExpression &column_ref) { is_constant = false; });
 }
 
 unique_ptr<Expression> TimeStampComparison::Apply(LogicalOperator &op, vector<reference<Expression>> &bindings,

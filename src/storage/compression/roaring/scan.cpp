@@ -1,18 +1,9 @@
 #include "duckdb/storage/compression/roaring/roaring.hpp"
 
-#include "duckdb/common/limits.hpp"
-#include "duckdb/common/likely.hpp"
-#include "duckdb/common/numeric_utils.hpp"
-#include "duckdb/function/compression/compression.hpp"
 #include "duckdb/function/compression_function.hpp"
-#include "duckdb/main/config.hpp"
 #include "duckdb/storage/buffer_manager.hpp"
-#include "duckdb/storage/table/column_data_checkpointer.hpp"
 #include "duckdb/storage/table/column_segment.hpp"
-#include "duckdb/storage/table/scan_state.hpp"
 #include "duckdb/storage/segment/uncompressed.hpp"
-#include "duckdb/common/fast_mem.hpp"
-#include "duckdb/common/bitpacking.hpp"
 
 namespace duckdb {
 
@@ -203,11 +194,20 @@ void BitsetContainerScanState::Verify() const {
 RoaringScanState::RoaringScanState(ColumnSegment &segment) : segment(segment) {
 	auto &buffer_manager = BufferManager::GetBufferManager(segment.db);
 	handle = buffer_manager.Pin(segment.block);
-	auto base_ptr = handle.Ptr() + segment.GetBlockOffset();
+	auto segment_size = segment.SegmentSize();
+	auto segment_block_offset = segment.GetBlockOffset();
+	if (segment_block_offset >= segment_size) {
+		throw InternalException("invalid segment_block_offset in RoaringScanState constructor");
+	}
+
+	auto base_ptr = handle.Ptr() + segment_block_offset;
 	data_ptr = base_ptr + sizeof(idx_t);
 
 	// Deserialize the container metadata for this segment
 	auto metadata_offset = Load<idx_t>(base_ptr);
+	if (metadata_offset >= segment_size) {
+		throw InternalException("invalid metadata offset in RoaringScanState constructor");
+	}
 	auto metadata_ptr = data_ptr + metadata_offset;
 
 	auto segment_count = segment.count.load();

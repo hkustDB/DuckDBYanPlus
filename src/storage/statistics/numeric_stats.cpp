@@ -237,6 +237,7 @@ FilterPropagateResult NumericStats::CheckZonemap(const BaseStatistics &stats, Ex
 	if (!NumericStats::HasMinMax(stats)) {
 		return FilterPropagateResult::NO_PRUNING_POSSIBLE;
 	}
+	D_ASSERT(stats.CanHaveNoNull());
 	switch (stats.GetType().InternalType()) {
 	case PhysicalType::INT8:
 		return CheckZonemapTemplated<int8_t>(stats, comparison_type, constants);
@@ -375,7 +376,8 @@ Value NumericValueUnionToValue(const LogicalType &type, const NumericValueUnion 
 }
 
 bool NumericStats::HasMinMax(const BaseStatistics &stats) {
-	return NumericStats::HasMin(stats) && NumericStats::HasMax(stats);
+	return NumericStats::HasMin(stats) && NumericStats::HasMax(stats) &&
+	       NumericStats::Min(stats) <= NumericStats::Max(stats);
 }
 
 bool NumericStats::HasMin(const BaseStatistics &stats) {
@@ -622,4 +624,6 @@ void NumericStats::Verify(const BaseStatistics &stats, Vector &vector, const Sel
 	}
 }
 
+template uint32_t NumericStats::GetMinUnsafe(const BaseStatistics &stats);
+template uint32_t NumericStats::GetMaxUnsafe(const BaseStatistics &stats);
 } // namespace duckdb

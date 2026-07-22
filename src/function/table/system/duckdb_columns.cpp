@@ -7,6 +7,8 @@
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/client_data.hpp"
 #include "duckdb/parser/constraints/not_null_constraint.hpp"
+#include "duckdb/planner/binder.hpp"
+#include "duckdb/main/query_result.hpp"
 
 #include <set>
 
@@ -80,7 +82,7 @@ static unique_ptr<FunctionData> DuckDBColumnsBind(ClientContext &context, TableF
 	return nullptr;
 }
 
-unique_ptr<GlobalTableFunctionState> DuckDBColumnsInit(ClientContext &context, TableFunctionInitInput &input) {
+static unique_ptr<GlobalTableFunctionState> DuckDBColumnsInit(ClientContext &context, TableFunctionInitInput &input) {
 	auto result = make_uniq<DuckDBColumnsData>();
 
 	// scan all the schemas for tables and views and collect them
@@ -94,7 +96,7 @@ unique_ptr<GlobalTableFunctionState> DuckDBColumnsInit(ClientContext &context, T
 
 class ColumnHelper {
 public:
-	static unique_ptr<ColumnHelper> Create(CatalogEntry &entry);
+	static unique_ptr<ColumnHelper> Create(ClientContext &context, CatalogEntry &entry);
 
 	virtual ~ColumnHelper() {
 	}
@@ -156,20 +158,24 @@ private:
 
 class ViewColumnHelper : public ColumnHelper {
 public:
-	explicit ViewColumnHelper(ViewCatalogEntry &entry) : entry(entry) {
+	explicit ViewColumnHelper(ClientContext &context, ViewCatalogEntry &entry) : entry(entry) {
+		entry.BindView(context);
+		view_columns = entry.GetColumnInfo();
+		column_names = view_columns->names;
+		QueryResult::DeduplicateColumns(column_names);
 	}
 
 	StandardEntry &Entry() override {
 		return entry;
 	}
 	idx_t NumColumns() override {
-		return entry.types.size();
+		return view_columns->types.size();
 	}
 	const string &ColumnName(idx_t col) override {
-		return col < entry.aliases.size() ? entry.aliases[col] : entry.names[col];
+		return col < entry.aliases.size() ? entry.aliases[col] : column_names[col];
 	}
 	const LogicalType &ColumnType(idx_t col) override {
-		return entry.types[col];
+		return view_columns->types[col];
 	}
 	const Value ColumnDefault(idx_t col) override {
 		return Value();
@@ -178,25 +184,24 @@ public:
 		return true;
 	}
 	const Value ColumnComment(idx_t col) override {
-		if (entry.column_comments.empty()) {
-			return Value();
-		}
-		D_ASSERT(entry.column_comments.size() == entry.types.size());
-		return entry.column_comments[col];
+		return entry.GetColumnComment(col);
 	}
 
 private:
 	ViewCatalogEntry &entry;
+	shared_ptr<ViewColumnInfo> view_columns;
+	vector<string> column_names;
 };
 
-unique_ptr<ColumnHelper> ColumnHelper::Create(CatalogEntry &entry) {
+unique_ptr<ColumnHelper> ColumnHelper::Create(ClientContext &context, CatalogEntry &entry) {
 	switch (entry.type) {
 	case CatalogType::TABLE_ENTRY:
 		return make_uniq<TableColumnHelper>(entry.Cast<TableCatalogEntry>());
 	case CatalogType::VIEW_ENTRY:
-		return make_uniq<ViewColumnHelper>(entry.Cast<ViewCatalogEntry>());
+		return make_uniq<ViewColumnHelper>(context, entry.Cast<ViewCatalogEntry>());
 	default:
-		throw NotImplementedException("Unsupported catalog type for duckdb_columns");
+		throw NotImplementedException({{"catalog_type", CatalogTypeToString(entry.type)}},
+		                              "Unsupported catalog type for duckdb_columns");
 	}
 }
 
@@ -302,7 +307,7 @@ void ColumnHelper::WriteColumns(idx_t start_index, idx_t start_col, idx_t end_co
 	}
 }
 
-void DuckDBColumnsFunction(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
+static void DuckDBColumnsFunction(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
 	auto &data = data_p.global_state->Cast<DuckDBColumnsData>();
 	if (data.offset >= data.entries.size()) {
 		// finished returning values
@@ -317,7 +322,7 @@ void DuckDBColumnsFunction(ClientContext &context, TableFunctionInput &data_p, D
 	idx_t column_offset = data.column_offset;
 	idx_t index = 0;
 	while (next < data.entries.size() && index < STANDARD_VECTOR_SIZE) {
-		auto column_helper = ColumnHelper::Create(data.entries[next].get());
+		auto column_helper = ColumnHelper::Create(context, data.entries[next].get());
 		idx_t columns = column_helper->NumColumns();
 
 		// Check to see if we are going to exceed the maximum index for a DataChunk

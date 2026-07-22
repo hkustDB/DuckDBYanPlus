@@ -53,6 +53,22 @@
         "type": "scalar_function"
     },
     {
+        "name": "get_type",
+        "parameters": "expression",
+        "description": "Returns the type of the result of the expression",
+        "example": "get_type('abc')",
+        "struct": "GetTypeFun",
+        "type": "scalar_function"
+    },
+    {
+        "name": "make_type",
+        "parameters": "name, ...",
+        "description": "Construct a type from its name and optional parameters",
+        "example": "make_type('DECIMAL', 10, 2)",
+        "struct": "MakeTypeFun",
+        "type": "scalar_function"
+    },
+    {
         "name": "can_cast_implicitly",
         "parameters": "source_type,target_type",
         "description": "Whether or not we can implicitly cast from the source type to the other type",
@@ -128,6 +144,13 @@
         "parameters": "param,type",
         "description": "Casts the first argument to the type of the second argument",
         "example": "cast_to_type('42', NULL::INTEGER)",
+        "type": "scalar_function"
+    },
+    {
+        "name": "replace_type",
+        "parameters": "param,type1,type2",
+        "description": "Casts all fields of type1 to type2",
+        "example": "replace_type({duck: 3.141592653589793::DOUBLE}, NULL::DOUBLE, NULL::DECIMAL(15,2))",
         "type": "scalar_function"
     }
 ]

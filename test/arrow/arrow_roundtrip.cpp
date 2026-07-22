@@ -5,14 +5,14 @@
 using namespace duckdb;
 
 static void TestArrowRoundtrip(const string &query, bool export_large_buffer = false,
-                               bool loseless_conversion = false) {
+                               bool lossless_conversion = false) {
 	DuckDB db;
 	Connection con(db);
 	if (export_large_buffer) {
 		auto res = con.Query("SET arrow_large_buffer_size=True");
 		REQUIRE(!res->HasError());
 	}
-	if (loseless_conversion) {
+	if (lossless_conversion) {
 		auto res = con.Query("SET arrow_lossless_conversion = true");
 		REQUIRE(!res->HasError());
 	}
@@ -31,7 +31,7 @@ static void TestArrowRoundtripStringView(const string &query) {
 static void TestParquetRoundtrip(const string &path) {
 	DBConfig config;
 	// This needs to be set since this test will be triggered when testing autoloading
-	config.options.allow_unsigned_extensions = true;
+	config.SetOptionByName("allow_unsigned_extensions", true);
 
 	DuckDB db(nullptr, &config);
 	Connection con(db);
@@ -48,14 +48,14 @@ TEST_CASE("Test Export Large", "[arrow]") {
 
 	TestArrowRoundtrip("SELECT 'bla'::BLOB FROM range(10000)");
 
-	TestArrowRoundtrip("SELECT '3d038406-6275-4aae-bec1-1235ccdeaade'::UUID FROM range(10000) tbl(i)");
+	TestArrowRoundtrip("SELECT '3d038406-6275-4aae-bec1-1235ccdeaade'::UUID FROM range(10000) tbl(i)", false, true);
 
 	// Test with Large Buffer Size
 	TestArrowRoundtrip("SELECT 'bla' FROM range(10000)", true);
 
 	TestArrowRoundtrip("SELECT 'bla'::BLOB FROM range(10000)", true);
 
-	TestArrowRoundtrip("SELECT '3d038406-6275-4aae-bec1-1235ccdeaade'::UUID FROM range(10000) tbl(i)", true);
+	TestArrowRoundtrip("SELECT '3d038406-6275-4aae-bec1-1235ccdeaade'::UUID FROM range(10000) tbl(i)", true, true);
 }
 
 TEST_CASE("Test arrow roundtrip", "[arrow]") {
@@ -86,9 +86,7 @@ TEST_CASE("Test arrow roundtrip", "[arrow]") {
 	// FIXME: there seems to be a bug in the enum arrow reader in this test when run with vsize=2
 	return;
 #endif
-	TestArrowRoundtrip("SELECT * EXCLUDE(bit,time_tz, varint) REPLACE "
-	                   "(interval (1) seconds AS interval, hugeint::DOUBLE as hugeint, uhugeint::DOUBLE as uhugeint) "
-	                   "FROM test_all_types()");
+	TestArrowRoundtrip("SELECT * FROM test_all_types()", false, true);
 }
 
 TEST_CASE("Test Arrow Extension Types", "[arrow][.]") {
@@ -103,16 +101,31 @@ TEST_CASE("Test Arrow Extension Types", "[arrow][.]") {
 	TestArrowRoundtrip("SELECT '170141183460469231731687303715884105727'::UHUGEINT str FROM range(5) tbl(i)", false,
 	                   true);
 
+	// UHUGEINT (lossy - should export as Decimal(38,0), not extension type)
+	{
+		DuckDB db;
+		Connection con(db);
+		auto client_properties = con.context->GetClientProperties();
+		ArrowSchema schema;
+		schema.Init();
+		vector<LogicalType> types = {LogicalType::UHUGEINT};
+		vector<string> names = {"col"};
+		ArrowConverter::ToArrowSchema(&schema, types, names, client_properties);
+		REQUIRE(schema.n_children == 1);
+		REQUIRE(string(schema.children[0]->format) == "d:38,0");
+		schema.release(&schema);
+	}
+
 	// BIT
 	TestArrowRoundtrip("SELECT '0101011'::BIT str FROM range(5) tbl(i)", false, true);
 
 	// TIME_TZ
 	TestArrowRoundtrip("SELECT '02:30:00+04'::TIMETZ str FROM range(5) tbl(i)", false, true);
 
-	// VARINT
-	TestArrowRoundtrip("SELECT 85070591730234614260976917445211069672::VARINT str FROM range(5) tbl(i)", false, true);
+	// BIGNUM
+	TestArrowRoundtrip("SELECT 85070591730234614260976917445211069672::BIGNUM str FROM range(5) tbl(i)", false, true);
 
-	TestArrowRoundtrip("SELECT 85070591730234614260976917445211069672::VARINT str FROM range(5) tbl(i)", true, true);
+	TestArrowRoundtrip("SELECT 85070591730234614260976917445211069672::BIGNUM str FROM range(5) tbl(i)", true, true);
 }
 
 TEST_CASE("Test Arrow Extension Types - JSON", "[arrow][.]") {
@@ -153,6 +166,10 @@ TEST_CASE("Test TPCH arrow roundtrip", "[arrow][.]") {
 	DBConfig config;
 	DuckDB db(nullptr, &config);
 	Connection con(db);
+
+#if defined(D_ASSERT_IS_ENABLED) && !defined(DEBUG)
+	return; // Skip in relassert, takes too long
+#endif
 
 	if (!db.ExtensionIsLoaded("tpch")) {
 		return;

@@ -20,7 +20,7 @@ static void test_runner() {
 	DuckDB db(nullptr);
 	Connection con(db);
 	std::ifstream t(file_name);
-	std::stringstream buffer;
+	duckdb::stringstream buffer;
 	buffer << t.rdbuf();
 	auto query = buffer.str();
 	result = con.Query(query.c_str());
@@ -40,7 +40,7 @@ static void test_runner() {
 
 struct RegisterOssfuzzTests {
 	RegisterOssfuzzTests() {
-		// register a separate test for each file in the QUERY_DIRECTORY
+		// Register a separate test for each file in the QUERY_DIRECTORY.
 		duckdb::unique_ptr<FileSystem> fs = FileSystem::CreateLocal();
 		fs->ListFiles(QUERY_DIRECTORY, [&](string path, bool) {
 			REGISTER_TEST_CASE(test_runner, string(QUERY_DIRECTORY) + "/" + path, "[ossfuzz][.]");

@@ -37,7 +37,7 @@ public:
 
 	//! Whether or not we can propagate a cast between two types
 	static bool CanPropagateCast(const LogicalType &source, const LogicalType &target);
-	static unique_ptr<BaseStatistics> TryPropagateCast(BaseStatistics &stats, const LogicalType &source,
+	static unique_ptr<BaseStatistics> TryPropagateCast(const BaseStatistics &stats, const LogicalType &source,
 	                                                   const LogicalType &target);
 
 private:
@@ -81,7 +81,7 @@ private:
 	//! Run a comparison between the statistics and the table filter; returns the prune result
 	FilterPropagateResult PropagateTableFilter(ColumnBinding stats_binding, BaseStatistics &stats, TableFilter &filter);
 	//! Update filter statistics from a TableFilter
-	void UpdateFilterStatistics(BaseStatistics &input, TableFilter &filter);
+	void UpdateFilterStatistics(BaseStatistics &input, const TableFilter &filter);
 
 	//! Add cardinalities together (i.e. new max is stats.max + new_stats.max): used for union
 	void AddCardinalities(unique_ptr<NodeStatistics> &stats, NodeStatistics &new_stats);
@@ -113,12 +113,7 @@ private:
 	bool ExpressionIsConstant(Expression &expr, const Value &val);
 	bool ExpressionIsConstantOrNull(Expression &expr, const Value &val);
 
-	// bool IsCompareDistinct(ExpressionType type);
-	// double GetDefaultSelectivity(ExpressionType comparison_type) { return 0.25; }
-	// double EstimateJoinSelectivity(LogicalJoin &join);
-	// double EstimateFilterSelectivity(Expression &condition);
-	// double EstimateConstantComparisonSelectivity(BaseStatistics &stats, ExpressionType comparison_type, const Value &constant);
-	// double EstimateColumnComparisonSelectivity(BaseStatistics &lstats, BaseStatistics &rstats, ExpressionType comparison_type);
+	unique_ptr<NodeStatistics> PropagateUnion(LogicalSetOperation &setop, unique_ptr<LogicalOperator> &node_ptr);
 
 private:
 	Optimizer &optimizer;

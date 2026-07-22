@@ -37,6 +37,10 @@ public:
 	static constexpr int32_t ORDINAL_FIELD_ID = 2147483645;
 	// Reserved field id used for the "_pos" field according to the iceberg spec (used for file_row_number)
 	static constexpr int32_t FILENAME_FIELD_ID = 2147483646;
+	// Reserved field id used for the "file_path" field for iceberg positional deletes
+	static constexpr int32_t DELETE_FILE_PATH_FIELD_ID = 2147483546;
+	// Reserved field id used for the "pos" field for iceberg positional deletes
+	static constexpr int32_t DELETE_POS_FIELD_ID = 2147483545;
 	// Reserved field id used for the "_row_id" field according to the iceberg spec
 	static constexpr int32_t ROW_ID_FIELD_ID = 2147483540;
 	// Reserved field id used for the "_last_updated_sequence_number" field according to the iceberg spec
@@ -63,10 +67,11 @@ public:
 	//! Create a MultiFileList from a vector of paths. Any globs will be expanded using the default filesystem
 	DUCKDB_API virtual shared_ptr<MultiFileList>
 	CreateFileList(ClientContext &context, const vector<string> &paths,
-	               FileGlobOptions options = FileGlobOptions::DISALLOW_EMPTY);
+	               const FileGlobInput &glob_input = FileGlobOptions::DISALLOW_EMPTY);
 	//! Shorthand for ParsePaths + CreateFileList
-	DUCKDB_API shared_ptr<MultiFileList> CreateFileList(ClientContext &context, const Value &input,
-	                                                    FileGlobOptions options = FileGlobOptions::DISALLOW_EMPTY);
+	DUCKDB_API shared_ptr<MultiFileList>
+	CreateFileList(ClientContext &context, const Value &input,
+	               const FileGlobInput &glob_input = FileGlobOptions::DISALLOW_EMPTY);
 
 	//! Parse the named parameters of a multi-file reader
 	DUCKDB_API virtual bool ParseOption(const string &key, const Value &val, MultiFileOptions &options,
@@ -106,6 +111,13 @@ public:
 	                                     optional_ptr<MultiFileReaderGlobalState> global_state);
 
 	//! Create all required mappings from the global types/names to the file-local types/names
+	DUCKDB_API virtual ReaderInitializeType
+	CreateMapping(ClientContext &context, MultiFileReaderData &reader_data,
+	              const vector<MultiFileColumnDefinition> &global_columns, const vector<ColumnIndex> &global_column_ids,
+	              optional_ptr<TableFilterSet> filters, MultiFileList &multi_file_list,
+	              const MultiFileReaderBindData &bind_data, const virtual_column_map_t &virtual_columns,
+	              MultiFileColumnMappingMode mapping_mode);
+
 	DUCKDB_API virtual ReaderInitializeType
 	CreateMapping(ClientContext &context, MultiFileReaderData &reader_data,
 	              const vector<MultiFileColumnDefinition> &global_columns, const vector<ColumnIndex> &global_column_ids,
@@ -174,6 +186,8 @@ public:
 	                           optional_ptr<MultiFileColumnDefinition> &global_column_reference);
 
 	DUCKDB_API virtual unique_ptr<MultiFileReader> Copy() const;
+
+	DUCKDB_API virtual FileGlobInput GetGlobInput(MultiFileReaderInterface &interface);
 
 protected:
 	//! Used in errors to report which function is using this MultiFileReader

@@ -36,6 +36,10 @@ bool TableFunctionData::Equals(const FunctionData &other) const {
 	return false;
 }
 
+bool FunctionData::SupportStatementCache() const {
+	return true;
+}
+
 Function::Function(string name_p) : name(std::move(name_p)) {
 }
 Function::~Function() {
@@ -96,6 +100,8 @@ void BuiltinFunctions::Initialize() {
 	RegisterArrowFunctions();
 
 	RegisterPragmaFunctions();
+
+	RegisterCopyFunctions();
 
 	// initialize collations
 	AddCollation("nocase", LowerFun::GetFunction(), true);

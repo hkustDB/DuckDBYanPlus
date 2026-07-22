@@ -8,6 +8,7 @@
 #include "duckdb/common/value_operations/value_operations.hpp"
 #include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/planner/operator/logical_copy_to_file.hpp"
+#include "duckdb/main/settings.hpp"
 
 #include <algorithm>
 
@@ -47,11 +48,19 @@ using vector_of_value_map_t = unordered_map<vector<Value>, T, VectorOfValuesHash
 
 class CopyToFunctionGlobalState : public GlobalSinkState {
 public:
-	explicit CopyToFunctionGlobalState(ClientContext &context)
-	    : initialized(false), rows_copied(0), last_file_offset(0),
+	explicit CopyToFunctionGlobalState(ClientContext &context_p)
+	    : context(context_p), finalized(false), initialized(false), rows_copied(0), last_file_offset(0),
 	      file_write_lock_if_rotating(make_uniq<StorageLock>()) {
-		max_open_files = ClientConfig::GetConfig(context).partitioned_write_max_open_files;
+		max_open_files = Settings::Get<PartitionedWriteMaxOpenFilesSetting>(context);
 	}
+	~CopyToFunctionGlobalState() override;
+
+	ClientContext &context;
+	//! Whether the copy was successfully finalized
+	bool finalized;
+	//! The list of files created by this operator
+	vector<string> created_files;
+
 	StorageLock lock;
 	atomic<bool> initialized;
 	atomic<idx_t> rows_copied;
@@ -77,7 +86,11 @@ public:
 			return;
 		}
 		// initialize writing to the file
+		created_files.push_back(op.file_path);
 		global_state = op.function.copy_to_initialize_global(context, *op.bind_data, op.file_path);
+		if (op.function.initialize_operator) {
+			op.function.initialize_operator(*global_state, op);
+		}
 		auto written_file_info = AddFile(*write_lock, op.file_path, op.return_type);
 		if (written_file_info) {
 			op.function.copy_to_get_written_statistics(context, *op.bind_data, *global_state,
@@ -107,7 +120,11 @@ public:
 				string p_dir;
 				p_dir += HivePartitioning::Escape(partition_col_name);
 				p_dir += "=";
-				p_dir += HivePartitioning::Escape(partition_value.ToString());
+				if (partition_value.IsNull()) {
+					p_dir += "__HIVE_DEFAULT_PARTITION__";
+				} else {
+					p_dir += HivePartitioning::Escape(partition_value.ToString());
+				}
 				path = fs.JoinPath(path, p_dir);
 				CreateDir(path, fs);
 			}
@@ -193,6 +210,7 @@ public:
 				full_path = op.filename_pattern.CreateFilename(fs, hive_path, op.file_extension, offset);
 			}
 		}
+		created_files.push_back(full_path);
 		optional_ptr<CopyToFileInfo> written_file_info;
 		if (op.return_type != CopyFunctionReturnType::CHANGED_ROWS) {
 			written_file_info = AddFile(*global_lock, full_path, op.return_type);
@@ -217,6 +235,9 @@ public:
 			written_file_info->partition_keys = Value::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR,
 			                                               std::move(partition_keys), std::move(partition_values));
 		}
+		if (op.function.initialize_operator) {
+			op.function.initialize_operator(*info->global_state, op);
+		}
 		auto &result = *info;
 		info->active_writes = 1;
 		// store in active write map
@@ -236,6 +257,22 @@ private:
 	idx_t global_offset = 0;
 };
 
+CopyToFunctionGlobalState::~CopyToFunctionGlobalState() {
+	if (!initialized || finalized || created_files.empty()) {
+		return;
+	}
+	// If we reach here, the query failed before Finalize was called
+	auto &fs = FileSystem::GetFileSystem(context);
+	for (auto &file : created_files) {
+		try {
+			fs.TryRemoveFile(file);
+		} catch (...) {
+			// TryRemoveFile migth fail for a varieaty of reasons, but we can't really propagate error codes here, so
+			// best effort cleanup
+		}
+	}
+}
+
 string PhysicalCopyToFile::GetTrimmedPath(ClientContext &context) const {
 	auto &fs = FileSystem::GetFileSystem(context);
 	string trimmed_path = file_path;
@@ -245,11 +282,14 @@ string PhysicalCopyToFile::GetTrimmedPath(ClientContext &context) const {
 
 class CopyToFunctionLocalState : public LocalSinkState {
 public:
-	explicit CopyToFunctionLocalState(unique_ptr<LocalFunctionData> local_state) : local_state(std::move(local_state)) {
+	explicit CopyToFunctionLocalState(ClientContext &context, unique_ptr<LocalFunctionData> local_state)
+	    : local_state(std::move(local_state)) {
+		partitioned_write_flush_threshold = Settings::Get<PartitionedWriteFlushThresholdSetting>(context);
 	}
 	unique_ptr<GlobalFunctionData> global_state;
 	unique_ptr<LocalFunctionData> local_state;
 	idx_t total_rows_copied = 0;
+	idx_t partitioned_write_flush_threshold;
 
 	//! Buffers the tuples in partitions before writing
 	unique_ptr<HivePartitionedColumnData> part_buffer;
@@ -274,7 +314,7 @@ public:
 		}
 		part_buffer->Append(*part_buffer_append_state, chunk);
 		append_count += chunk.size();
-		if (append_count >= ClientConfig::GetConfig(context.client).partitioned_write_flush_threshold) {
+		if (append_count >= partitioned_write_flush_threshold) {
 			// flush all cached partitions
 			FlushPartitions(context, op, g);
 		}
@@ -345,6 +385,7 @@ unique_ptr<GlobalFunctionData> PhysicalCopyToFile::CreateFileState(ClientContext
 	idx_t this_file_offset = g.last_file_offset++;
 	auto &fs = FileSystem::GetFileSystem(context);
 	string output_path(filename_pattern.CreateFilename(fs, file_path, file_extension, this_file_offset));
+	g.created_files.push_back(output_path);
 	optional_ptr<CopyToFileInfo> written_file_info;
 	if (return_type != CopyFunctionReturnType::CHANGED_ROWS) {
 		written_file_info = g.AddFile(global_lock, output_path, return_type);
@@ -353,6 +394,9 @@ unique_ptr<GlobalFunctionData> PhysicalCopyToFile::CreateFileState(ClientContext
 	if (written_file_info) {
 		function.copy_to_get_written_statistics(context, *bind_data, *result, *written_file_info->file_stats);
 	}
+	if (function.initialize_operator) {
+		function.initialize_operator(*result, *this);
+	}
 	return result;
 }
 
@@ -360,11 +404,12 @@ unique_ptr<LocalSinkState> PhysicalCopyToFile::GetLocalSinkState(ExecutionContex
 	if (partition_output) {
 		auto &g = sink_state->Cast<CopyToFunctionGlobalState>();
 
-		auto state = make_uniq<CopyToFunctionLocalState>(nullptr);
+		auto state = make_uniq<CopyToFunctionLocalState>(context.client, nullptr);
 		state->InitializeAppendState(context.client, *this, g);
 		return std::move(state);
 	}
-	auto res = make_uniq<CopyToFunctionLocalState>(function.copy_to_initialize_local(context, *bind_data));
+	auto res =
+	    make_uniq<CopyToFunctionLocalState>(context.client, function.copy_to_initialize_local(context, *bind_data));
 	return std::move(res);
 }
 
@@ -373,11 +418,6 @@ void CheckDirectory(FileSystem &fs, const string &file_path, CopyOverwriteMode o
 	    overwrite_mode == CopyOverwriteMode::COPY_APPEND) {
 		// with overwrite or ignore we fully ignore the presence of any files instead of erasing them
 		return;
-	}
-	if (fs.IsRemoteFile(file_path) && overwrite_mode == CopyOverwriteMode::COPY_OVERWRITE) {
-		// we can only remove files for local file systems currently
-		// as remote file systems (e.g. S3) do not support RemoveFile
-		throw NotImplementedException("OVERWRITE is not supported for remote file systems");
 	}
 	vector<string> file_list;
 	vector<string> directory_list;
@@ -397,9 +437,7 @@ void CheckDirectory(FileSystem &fs, const string &file_path, CopyOverwriteMode o
 		return;
 	}
 	if (overwrite_mode == CopyOverwriteMode::COPY_OVERWRITE) {
-		for (auto &file : file_list) {
-			fs.RemoveFile(file);
-		}
+		fs.RemoveFiles(file_list);
 	} else {
 		throw IOException("Directory \"%s\" is not empty! Enable OVERWRITE option to overwrite files", file_path);
 	}
@@ -408,12 +446,9 @@ void CheckDirectory(FileSystem &fs, const string &file_path, CopyOverwriteMode o
 unique_ptr<GlobalSinkState> PhysicalCopyToFile::GetGlobalSinkState(ClientContext &context) const {
 	if (partition_output || per_thread_output || rotate) {
 		auto &fs = FileSystem::GetFileSystem(context);
-		if (fs.FileExists(file_path)) {
-			// the target file exists AND is a file (not a directory)
-			if (fs.IsRemoteFile(file_path)) {
-				// for remote files we cannot do anything - as we cannot delete the file
-				throw IOException("Cannot write to \"%s\" - it exists and is a file, not a directory!", file_path);
-			} else {
+		if (!fs.IsRemoteFile(file_path)) {
+			if (fs.FileExists(file_path)) {
+				// the target file exists AND is a file (not a directory)
 				// for local files we can remove the file if OVERWRITE_OR_IGNORE is enabled
 				if (overwrite_mode == CopyOverwriteMode::COPY_OVERWRITE) {
 					fs.RemoveFile(file_path);
@@ -432,7 +467,7 @@ unique_ptr<GlobalSinkState> PhysicalCopyToFile::GetGlobalSinkState(ClientContext
 		}
 
 		auto state = make_uniq<CopyToFunctionGlobalState>(context);
-		if (!per_thread_output && rotate) {
+		if (!per_thread_output && rotate && write_empty_file) {
 			auto global_lock = state->lock.GetExclusiveLock();
 			state->global_state = CreateFileState(context, *state, *global_lock);
 		}
@@ -458,7 +493,6 @@ unique_ptr<GlobalSinkState> PhysicalCopyToFile::GetGlobalSinkState(ClientContext
 void PhysicalCopyToFile::MoveTmpFile(ClientContext &context, const string &tmp_file_path) {
 	auto &fs = FileSystem::GetFileSystem(context);
 	auto file_path = GetNonTmpFile(context, tmp_file_path);
-	fs.TryRemoveFile(file_path);
 	fs.MoveFile(tmp_file_path, file_path);
 }
 
@@ -476,9 +510,9 @@ string PhysicalCopyToFile::GetNonTmpFile(ClientContext &context, const string &t
 	return fs.JoinPath(path, base);
 }
 
-PhysicalCopyToFile::PhysicalCopyToFile(vector<LogicalType> types, CopyFunction function_p,
+PhysicalCopyToFile::PhysicalCopyToFile(PhysicalPlan &physical_plan, vector<LogicalType> types, CopyFunction function_p,
                                        unique_ptr<FunctionData> bind_data, idx_t estimated_cardinality)
-    : PhysicalOperator(PhysicalOperatorType::COPY_TO_FILE, std::move(types), estimated_cardinality),
+    : PhysicalOperator(physical_plan, PhysicalOperatorType::COPY_TO_FILE, std::move(types), estimated_cardinality),
       function(std::move(function_p)), bind_data(std::move(bind_data)), parallel(false) {
 }
 
@@ -490,6 +524,9 @@ void PhysicalCopyToFile::WriteRotateInternal(ExecutionContext &context, GlobalSi
 	while (true) {
 		// Grab global lock and dereference the current file state (and corresponding lock)
 		auto global_guard = g.lock.GetExclusiveLock();
+		if (!g.global_state) {
+			g.global_state = CreateFileState(context.client, *sink_state, *global_guard);
+		}
 		auto &file_state = *g.global_state;
 		auto &file_lock = *g.file_write_lock_if_rotating;
 		if (rotate && function.rotate_next_file(file_state, *bind_data, file_size_bytes)) {
@@ -523,7 +560,7 @@ SinkResultType PhysicalCopyToFile::Sink(ExecutionContext &context, DataChunk &ch
 	auto &g = input.global_state.Cast<CopyToFunctionGlobalState>();
 	auto &l = input.local_state.Cast<CopyToFunctionLocalState>();
 
-	if (!write_empty_file) {
+	if (!write_empty_file && !rotate) {
 		// if we are only writing the file when there are rows to write we need to initialize here
 		g.Initialize(context.client, *this);
 	}
@@ -625,7 +662,10 @@ SinkFinalizeType PhysicalCopyToFile::FinalizeInternal(ClientContext &context, Gl
 
 SinkFinalizeType PhysicalCopyToFile::Finalize(Pipeline &pipeline, Event &event, ClientContext &context,
                                               OperatorSinkFinalizeInput &input) const {
-	return FinalizeInternal(context, input.global_state);
+	auto &gstate = input.global_state.Cast<CopyToFunctionGlobalState>();
+	auto result = FinalizeInternal(context, input.global_state);
+	gstate.finalized = true;
+	return result;
 }
 
 //===--------------------------------------------------------------------===//
@@ -648,6 +688,43 @@ unique_ptr<GlobalSourceState> PhysicalCopyToFile::GetGlobalSourceState(ClientCon
 	return make_uniq<CopyToFileGlobalSourceState>();
 }
 
+namespace {
+
+struct ColumnStatsMapData {
+	vector<Value> keys;
+	vector<Value> values;
+};
+
+} // namespace
+
+static ColumnStatsMapData
+CreateColumnStatistics(const case_insensitive_map_t<case_insensitive_map_t<Value>> &column_statistics) {
+	ColumnStatsMapData result;
+
+	//! Use a map to make sure the result has a consistent ordering
+	map<string, Value> stats;
+	for (auto &entry : column_statistics) {
+		map<string, Value> per_column_stats;
+		for (auto &stats_entry : entry.second) {
+			per_column_stats.emplace(stats_entry.first, stats_entry.second);
+		}
+		vector<Value> stats_keys;
+		vector<Value> stats_values;
+		for (auto &stats_entry : per_column_stats) {
+			stats_keys.emplace_back(stats_entry.first);
+			stats_values.emplace_back(std::move(stats_entry.second));
+		}
+		auto map_value =
+		    Value::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR, std::move(stats_keys), std::move(stats_values));
+		stats.emplace(entry.first, std::move(map_value));
+	}
+	for (auto &entry : stats) {
+		result.keys.emplace_back(entry.first);
+		result.values.emplace_back(std::move(entry.second));
+	}
+	return result;
+}
+
 void PhysicalCopyToFile::ReturnStatistics(DataChunk &chunk, idx_t row_idx, CopyToFileInfo &info) {
 	auto &file_stats = *info.file_stats;
 
@@ -660,37 +737,18 @@ void PhysicalCopyToFile::ReturnStatistics(DataChunk &chunk, idx_t row_idx, CopyT
 	// footer size bytes BIGINT
 	chunk.SetValue(3, row_idx, file_stats.footer_size_bytes);
 	// column statistics map(varchar, map(varchar, varchar))
-	map<string, Value> stats;
-	for (auto &entry : file_stats.column_statistics) {
-		map<string, Value> per_column_stats;
-		for (auto &stats_entry : entry.second) {
-			per_column_stats.insert(make_pair(stats_entry.first, stats_entry.second));
-		}
-		vector<Value> stats_keys;
-		vector<Value> stats_values;
-		for (auto &stats_entry : per_column_stats) {
-			stats_keys.emplace_back(stats_entry.first);
-			stats_values.emplace_back(std::move(stats_entry.second));
-		}
-		auto map_value =
-		    Value::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR, std::move(stats_keys), std::move(stats_values));
-		stats.insert(make_pair(entry.first, std::move(map_value)));
-	}
-	vector<Value> keys;
-	vector<Value> values;
-	for (auto &entry : stats) {
-		keys.emplace_back(entry.first);
-		values.emplace_back(std::move(entry.second));
-	}
+	auto column_stats = CreateColumnStatistics(file_stats.column_statistics);
 	auto map_val_type = LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR);
-	chunk.SetValue(4, row_idx, Value::MAP(LogicalType::VARCHAR, map_val_type, std::move(keys), std::move(values)));
+	chunk.SetValue(
+	    4, row_idx,
+	    Value::MAP(LogicalType::VARCHAR, map_val_type, std::move(column_stats.keys), std::move(column_stats.values)));
 
 	// partition_keys map(varchar, varchar)
 	chunk.SetValue(5, row_idx, info.partition_keys);
 }
 
-SourceResultType PhysicalCopyToFile::GetData(ExecutionContext &context, DataChunk &chunk,
-                                             OperatorSourceInput &input) const {
+SourceResultType PhysicalCopyToFile::GetDataInternal(ExecutionContext &context, DataChunk &chunk,
+                                                     OperatorSourceInput &input) const {
 	auto &g = sink_state->Cast<CopyToFunctionGlobalState>();
 	if (return_type == CopyFunctionReturnType::WRITTEN_FILE_STATISTICS) {
 		auto &source_state = input.global_state.Cast<CopyToFileGlobalSourceState>();

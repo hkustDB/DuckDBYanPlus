@@ -26,10 +26,14 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalRecursiveCTE &op) {
 	// If the logical operator has no key targets or all columns are referenced,
 	// then we create a normal recursive CTE operator.
 	if (op.key_targets.empty()) {
+		auto recurring_table = make_shared_ptr<ColumnDataCollection>(context, op.types);
+		recurring_cte_tables[op.table_index] = recurring_table;
 		auto &right = CreatePlan(*op.children[1]);
 		auto &cte = Make<PhysicalRecursiveCTE>(op.ctename, op.table_index, op.types, op.union_all, left, right,
 		                                       op.estimated_cardinality);
 		auto &cast_cte = cte.Cast<PhysicalRecursiveCTE>();
+		cast_cte.ref_recurring = op.ref_recurring;
+		cast_cte.recurring_table = recurring_table;
 		cast_cte.distinct_types = op.types;
 		cast_cte.working_table = working_table;
 		return cte;
@@ -104,25 +108,23 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalCTERef &op) {
 	D_ASSERT(op.children.empty());
 
 	// Check if this LogicalCTERef is supposed to scan a materialized CTE.
-	if (op.materialized_cte == CTEMaterialize::CTE_MATERIALIZE_ALWAYS) {
-		// Lookup if there is a materialized CTE for the cte_index.
-		auto materialized_cte = materialized_ctes.find(op.cte_index);
+	// Lookup if there is a materialized CTE for the cte_index.
+	auto materialized_cte = materialized_ctes.find(op.cte_index);
 
-		// If this check fails, this is a reference to a materialized recursive CTE.
-		if (materialized_cte != materialized_ctes.end()) {
-			auto &chunk_scan = Make<PhysicalColumnDataScan>(op.chunk_types, PhysicalOperatorType::CTE_SCAN,
-			                                                op.estimated_cardinality, op.cte_index);
+	// If this check fails, this is a reference to a materialized recursive CTE.
+	if (materialized_cte != materialized_ctes.end()) {
+		auto &chunk_scan = Make<PhysicalColumnDataScan>(op.chunk_types, PhysicalOperatorType::CTE_SCAN,
+		                                                op.estimated_cardinality, op.cte_index);
 
-			auto cte = recursive_cte_tables.find(op.cte_index);
-			if (cte == recursive_cte_tables.end()) {
-				throw InvalidInputException("Referenced materialized CTE does not exist.");
-			}
-
-			auto &cast_chunk_scan = chunk_scan.Cast<PhysicalColumnDataScan>();
-			cast_chunk_scan.collection = cte->second.get();
-			materialized_cte->second.push_back(cast_chunk_scan);
-			return chunk_scan;
+		auto cte = recursive_cte_tables.find(op.cte_index);
+		if (cte == recursive_cte_tables.end()) {
+			throw InvalidInputException("Referenced materialized CTE does not exist.");
 		}
+
+		auto &cast_chunk_scan = chunk_scan.Cast<PhysicalColumnDataScan>();
+		cast_chunk_scan.collection = cte->second.get();
+		materialized_cte->second.push_back(cast_chunk_scan);
+		return chunk_scan;
 	}
 
 	// CreatePlan of a LogicalRecursiveCTE must have happened before.

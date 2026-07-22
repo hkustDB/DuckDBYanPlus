@@ -8,12 +8,10 @@
 
 #pragma once
 
-#include "duckdb/common/common.hpp"
+#include "duckdb/common/types/string_type.hpp"
 #include "duckdb/common/enums/expression_type.hpp"
 #include "duckdb/common/enums/filter_propagate_result.hpp"
 #include "duckdb/common/exception.hpp"
-#include "duckdb/common/operator/comparison_operators.hpp"
-#include "duckdb/common/types/hugeint.hpp"
 #include "duckdb/common/array_ptr.hpp"
 
 namespace duckdb {
@@ -71,6 +69,8 @@ struct StringStats {
 	                                                     ExpressionType comparison_type, const string &value);
 
 	DUCKDB_API static void Update(BaseStatistics &stats, const string_t &value);
+	DUCKDB_API static void SetMin(BaseStatistics &stats, const string_t &value);
+	DUCKDB_API static void SetMax(BaseStatistics &stats, const string_t &value);
 	DUCKDB_API static void Merge(BaseStatistics &stats, const BaseStatistics &other);
 	DUCKDB_API static void Verify(const BaseStatistics &stats, Vector &vector, const SelectionVector &sel, idx_t count);
 

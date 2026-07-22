@@ -3,7 +3,6 @@
 #include "duckdb/catalog/catalog_entry/scalar_function_catalog_entry.hpp"
 #include "duckdb/common/types/column/column_data_collection.hpp"
 #include "duckdb/execution/column_binding_resolver.hpp"
-#include "duckdb/execution/transfer_bf_linker.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/config.hpp"
 #include "duckdb/main/query_profiler.hpp"
@@ -11,8 +10,7 @@
 #include "duckdb/planner/operator/logical_extension_operator.hpp"
 #include "duckdb/planner/operator/list.hpp"
 #include "duckdb/execution/operator/helper/physical_verify_vector.hpp"
-#include "duckdb/planner/operator/logical_create_bf.hpp"
-#include "duckdb/planner/operator/logical_use_bf.hpp"
+#include "duckdb/main/settings.hpp"
 
 namespace duckdb {
 
@@ -31,23 +29,19 @@ unique_ptr<PhysicalPlan> PhysicalPlanGenerator::Plan(unique_ptr<LogicalOperator>
 PhysicalOperator &PhysicalPlanGenerator::ResolveAndPlan(unique_ptr<LogicalOperator> op) {
 	auto &profiler = QueryProfiler::Get(context);
 
-	// Create and link BloomFilters for UseBFOperator and CreateBFOperator
-	TransferBFLinker linker;
-	linker.LinkBFOperators(*op);
+	// Resolve the types of each operator.
+	profiler.StartPhase(MetricType::PHYSICAL_PLANNER_RESOLVE_TYPES);
+	op->ResolveOperatorTypes();
+	profiler.EndPhase();
 
 	// Resolve the column references.
-	profiler.StartPhase(MetricsType::PHYSICAL_PLANNER_COLUMN_BINDING);
+	profiler.StartPhase(MetricType::PHYSICAL_PLANNER_COLUMN_BINDING);
 	ColumnBindingResolver resolver;
 	resolver.VisitOperator(*op);
 	profiler.EndPhase();
 
-	// Resolve the types of each operator.
-	profiler.StartPhase(MetricsType::PHYSICAL_PLANNER_RESOLVE_TYPES);
-	op->ResolveOperatorTypes();
-	profiler.EndPhase();
-
 	// Create the main physical plan.
-	profiler.StartPhase(MetricsType::PHYSICAL_PLANNER_CREATE_PLAN);
+	profiler.StartPhase(MetricType::PHYSICAL_PLANNER_CREATE_PLAN);
 	physical_plan = PlanInternal(*op);
 	profiler.EndPhase();
 
@@ -63,11 +57,11 @@ unique_ptr<PhysicalPlan> PhysicalPlanGenerator::PlanInternal(LogicalOperator &op
 	physical_plan->SetRoot(CreatePlan(op));
 	physical_plan->Root().estimated_cardinality = op.estimated_cardinality;
 
-	auto &config = DBConfig::GetConfig(context);
-	if (config.options.debug_verify_vector != DebugVectorVerification::NONE) {
-		if (config.options.debug_verify_vector != DebugVectorVerification::DICTIONARY_EXPRESSION) {
-			physical_plan->SetRoot(
-			    Make<PhysicalVerifyVector>(physical_plan->Root(), config.options.debug_verify_vector));
+	auto debug_verify_vector = Settings::Get<DebugVerifyVectorSetting>(context);
+	if (debug_verify_vector != DebugVectorVerification::NONE) {
+		if (debug_verify_vector != DebugVectorVerification::DICTIONARY_EXPRESSION &&
+		    debug_verify_vector != DebugVectorVerification::VARIANT_VECTOR) {
+			physical_plan->SetRoot(Make<PhysicalVerifyVector>(physical_plan->Root(), debug_verify_vector));
 		}
 	}
 	return std::move(physical_plan);
@@ -127,6 +121,8 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalOperator &op) {
 		return CreatePlan(op.Cast<LogicalExpressionGet>());
 	case LogicalOperatorType::LOGICAL_UPDATE:
 		return CreatePlan(op.Cast<LogicalUpdate>());
+	case LogicalOperatorType::LOGICAL_MERGE_INTO:
+		return CreatePlan(op.Cast<LogicalMergeInto>());
 	case LogicalOperatorType::LOGICAL_CREATE_TABLE:
 		return CreatePlan(op.Cast<LogicalCreateTable>());
 	case LogicalOperatorType::LOGICAL_CREATE_INDEX:
@@ -176,10 +172,6 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalOperator &op) {
 		return CreatePlan(op.Cast<LogicalCopyDatabase>());
 	case LogicalOperatorType::LOGICAL_UPDATE_EXTENSIONS:
 		return CreatePlan(op.Cast<LogicalSimple>());
-	case LogicalOperatorType::LOGICAL_CREATE_BF:
-		return CreatePlan(op.Cast<LogicalCreateBF>());
-	case LogicalOperatorType::LOGICAL_USE_BF:
-		return CreatePlan(op.Cast<LogicalUseBF>());
 	case LogicalOperatorType::LOGICAL_EXTENSION_OPERATOR: {
 		auto &extension_op = op.Cast<LogicalExtensionOperator>();
 		return extension_op.CreatePlan(context, *this);
@@ -191,6 +183,13 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalOperator &op) {
 	}
 	}
 	throw InternalException("Physical plan generator - no plan generated");
+}
+
+ArenaAllocator &PhysicalPlanGenerator::ArenaRef() {
+	if (!physical_plan) {
+		physical_plan = make_uniq<PhysicalPlan>(Allocator::Get(context));
+	}
+	return physical_plan->ArenaRef();
 }
 
 } // namespace duckdb

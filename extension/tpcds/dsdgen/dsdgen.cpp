@@ -74,6 +74,15 @@ void DSDGenWrapper::DSDGen(double scale, ClientContext &context, string catalog_
 		return;
 	}
 
+#ifdef DEBUG
+	// With a scale of 778+ the following multiplication (signed int target value) during generation is:
+	// r->cc_sq_ft *= r->cc_employees overflows;
+	// 3,464,105 * 649 = 2,248,204,145 (max. signed int value: 2,147,483,647)
+	if (scale > 777) {
+		throw InvalidInputException("DSDGen results in a signed integer overflow with a scale exceeding 777.");
+	}
+#endif
+
 	InitializeDSDgen(scale);
 
 	// populate append info
@@ -88,6 +97,10 @@ void DSDGenWrapper::DSDGen(double scale, ClientContext &context, string catalog_
 		auto table_name = table_def.name + suffix;
 		assert(table_def.name);
 		auto &table_entry = catalog.GetEntry<TableCatalogEntry>(context, schema, table_name);
+
+		if (!table_entry.IsDuckTable()) {
+			throw InvalidInputException("dsdgen is only supported for DuckDB database files");
+		}
 
 		auto append = make_uniq<tpcds_append_information>(context, &table_entry);
 		append->table_def = table_def;

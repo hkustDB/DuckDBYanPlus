@@ -33,8 +33,8 @@ public:
 	static constexpr const PhysicalOperatorType TYPE = PhysicalOperatorType::COPY_TO_FILE;
 
 public:
-	PhysicalCopyToFile(vector<LogicalType> types, CopyFunction function, unique_ptr<FunctionData> bind_data,
-	                   idx_t estimated_cardinality);
+	PhysicalCopyToFile(PhysicalPlan &physical_plan, vector<LogicalType> types, CopyFunction function,
+	                   unique_ptr<FunctionData> bind_data, idx_t estimated_cardinality);
 
 	CopyFunction function;
 	unique_ptr<FunctionData> bind_data;
@@ -60,7 +60,8 @@ public:
 public:
 	// Source interface
 	unique_ptr<GlobalSourceState> GetGlobalSourceState(ClientContext &context) const override;
-	SourceResultType GetData(ExecutionContext &context, DataChunk &chunk, OperatorSourceInput &input) const override;
+	SourceResultType GetDataInternal(ExecutionContext &context, DataChunk &chunk,
+	                                 OperatorSourceInput &input) const override;
 
 	bool IsSource() const override {
 		return true;

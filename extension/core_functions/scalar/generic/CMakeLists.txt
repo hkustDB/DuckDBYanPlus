@@ -8,8 +8,9 @@ add_library_unity(
   current_setting.cpp
   hash.cpp
   least.cpp
+  replace_type.cpp
   stats.cpp
-  typeof.cpp
+  type_functions.cpp
   system_functions.cpp)
 set(CORE_FUNCTION_FILES
     ${CORE_FUNCTION_FILES} $<TARGET_OBJECTS:duckdb_core_functions_generic>

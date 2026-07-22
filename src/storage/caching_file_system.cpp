@@ -1,17 +1,55 @@
 #include "duckdb/storage/caching_file_system.hpp"
 
-#include "duckdb/common/chrono.hpp"
+#include "duckdb/common/enums/cache_validation_mode.hpp"
+#include "duckdb/common/file_opener.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/enums/memory_tag.hpp"
+#include "duckdb/common/string_util.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/main/config.hpp"
 #include "duckdb/storage/buffer_manager.hpp"
-#include "duckdb/storage/buffer/block_handle.hpp"
 #include "duckdb/storage/external_file_cache.hpp"
+#include "duckdb/storage/external_file_cache_util.hpp"
 
 namespace duckdb {
 
-CachingFileSystem::CachingFileSystem(FileSystem &file_system_p, DatabaseInstance &db)
-    : file_system(file_system_p), external_file_cache(ExternalFileCache::Get(db)) {
+namespace {
+
+// Return whether validation should occur for a specific file
+bool ShouldValidate(const OpenFileInfo &info, optional_ptr<ClientContext> client_context, DatabaseInstance &db,
+                    const string &filepath) {
+	const CacheValidationMode mode = ExternalFileCacheUtil::GetCacheValidationMode(info, client_context, db);
+	switch (mode) {
+	case CacheValidationMode::VALIDATE_ALL:
+		return true;
+	case CacheValidationMode::VALIDATE_REMOTE:
+		return FileSystem::IsRemoteFile(filepath);
+	case CacheValidationMode::NO_VALIDATION:
+		return false;
+	default:
+		return true;
+	}
+}
+
+bool ShouldExpandToFillGap(const idx_t current_length, const idx_t added_length) {
+	const idx_t MAX_BOUND_TO_BE_ADDED_LENGTH = 1048576;
+
+	if (added_length > MAX_BOUND_TO_BE_ADDED_LENGTH) {
+		// Absolute value of what would be needed to added is too high
+		return false;
+	}
+	if (added_length > current_length) {
+		// Relative value of what would be needed to added is too high
+		return false;
+	}
+
+	return true;
+}
+
+} // namespace
+
+CachingFileSystem::CachingFileSystem(FileSystem &file_system_p, DatabaseInstance &db_p)
+    : file_system(file_system_p), db(db_p), external_file_cache(ExternalFileCache::Get(db)) {
 }
 
 CachingFileSystem::~CachingFileSystem() {
@@ -21,27 +59,32 @@ CachingFileSystem CachingFileSystem::Get(ClientContext &context) {
 	return CachingFileSystem(FileSystem::GetFileSystem(context), *context.db);
 }
 
-unique_ptr<CachingFileHandle> CachingFileSystem::OpenFile(const OpenFileInfo &path, FileOpenFlags flags) {
-	return make_uniq<CachingFileHandle>(*this, path, flags, external_file_cache.GetOrCreateCachedFile(path.path));
+unique_ptr<CachingFileHandle> CachingFileSystem::OpenFile(const OpenFileInfo &path, FileOpenFlags flags,
+                                                          optional_ptr<FileOpener> opener) {
+	return make_uniq<CachingFileHandle>(QueryContext(), *this, path, flags, opener,
+	                                    external_file_cache.GetOrCreateCachedFile(path.path));
 }
 
-CachingFileHandle::CachingFileHandle(CachingFileSystem &caching_file_system_p, const OpenFileInfo &path_p,
-                                     FileOpenFlags flags_p, CachedFile &cached_file_p)
-    : caching_file_system(caching_file_system_p), external_file_cache(caching_file_system.external_file_cache),
-      path(path_p), flags(flags_p), validate(true), cached_file(cached_file_p), position(0) {
-	if (path.extended_info) {
-		const auto &open_options = path.extended_info->options;
-		const auto validate_entry = open_options.find("validate_external_file_cache");
-		if (validate_entry != open_options.end()) {
-			validate = BooleanValue::Get(validate_entry->second);
-		}
-	}
-	if (!external_file_cache.IsEnabled() || validate) {
+unique_ptr<CachingFileHandle> CachingFileSystem::OpenFile(QueryContext context, const OpenFileInfo &path,
+                                                          FileOpenFlags flags, optional_ptr<FileOpener> opener) {
+	return make_uniq<CachingFileHandle>(context, *this, path, flags, opener,
+	                                    external_file_cache.GetOrCreateCachedFile(path.path));
+}
+
+CachingFileHandle::CachingFileHandle(QueryContext context, CachingFileSystem &caching_file_system_p,
+                                     const OpenFileInfo &path_p, FileOpenFlags flags_p,
+                                     optional_ptr<FileOpener> opener_p, CachedFile &cached_file_p)
+    : context(context), caching_file_system(caching_file_system_p),
+      external_file_cache(caching_file_system.external_file_cache), path(path_p), flags(flags_p), opener(opener_p),
+      validate(
+          ExternalFileCacheUtil::GetCacheValidationMode(path_p, context.GetClientContext(), caching_file_system_p.db)),
+      cached_file(cached_file_p), position(0) {
+	if (!external_file_cache.IsEnabled() || Validate()) {
 		// If caching is disabled, or if we must validate cache entries, we always have to open the file
 		GetFileHandle();
 		return;
 	}
-	// If we don't have any cached file ranges, we must also open the file
+	// If we don't have any cached file ranges, we must also open the file.
 	auto guard = cached_file.lock.GetSharedLock();
 	if (cached_file.Ranges(guard).empty()) {
 		guard.reset();
@@ -54,12 +97,12 @@ CachingFileHandle::~CachingFileHandle() {
 
 FileHandle &CachingFileHandle::GetFileHandle() {
 	if (!file_handle) {
-		file_handle = caching_file_system.file_system.OpenFile(path, flags);
+		file_handle = caching_file_system.file_system.OpenFile(path, flags, opener);
 		last_modified = caching_file_system.file_system.GetLastModifiedTime(*file_handle);
 		version_tag = caching_file_system.file_system.GetVersionTag(*file_handle);
 
 		auto guard = cached_file.lock.GetExclusiveLock();
-		if (!cached_file.IsValid(guard, validate, version_tag, last_modified)) {
+		if (!cached_file.IsValid(guard, Validate(), version_tag, last_modified)) {
 			cached_file.Ranges(guard).clear(); // Invalidate entire cache
 		}
 		cached_file.FileSize(guard) = file_handle->GetFileSize();
@@ -76,36 +119,48 @@ BufferHandle CachingFileHandle::Read(data_ptr_t &buffer, const idx_t nr_bytes, c
 	if (!external_file_cache.IsEnabled()) {
 		result = external_file_cache.GetBufferManager().Allocate(MemoryTag::EXTERNAL_FILE_CACHE, nr_bytes);
 		buffer = result.Ptr();
-		GetFileHandle().Read(buffer, nr_bytes, location);
+		GetFileHandle().Read(context, buffer, nr_bytes, location);
 		return result;
 	}
 
 	// Try to read from the cache, filling overlapping_ranges in the process
 	vector<shared_ptr<CachedFileRange>> overlapping_ranges;
-	result = TryReadFromCache(buffer, nr_bytes, location, overlapping_ranges);
+	optional_idx start_location_of_next_range;
+	result = TryReadFromCache(buffer, nr_bytes, location, overlapping_ranges, start_location_of_next_range);
 	if (result.IsValid()) {
 		return result; // Success
 	}
 
+	idx_t new_nr_bytes = nr_bytes;
+	if (start_location_of_next_range.IsValid()) {
+		const idx_t nr_bytes_to_be_added = start_location_of_next_range.GetIndex() - location - nr_bytes;
+		if (ShouldExpandToFillGap(nr_bytes, nr_bytes_to_be_added)) {
+			// Grow the range from location to start_location_of_next_range, so that to fill gaps in the cached ranges
+			new_nr_bytes = nr_bytes + nr_bytes_to_be_added;
+		}
+	}
+
 	// Finally, if we weren't able to find the file range in the cache, we have to create a new file range
-	result = external_file_cache.GetBufferManager().Allocate(MemoryTag::EXTERNAL_FILE_CACHE, nr_bytes);
-	auto new_file_range = make_shared_ptr<CachedFileRange>(result.GetBlockHandle(), nr_bytes, location, version_tag);
+	result = external_file_cache.GetBufferManager().Allocate(MemoryTag::EXTERNAL_FILE_CACHE, new_nr_bytes);
+	auto new_file_range =
+	    make_shared_ptr<CachedFileRange>(result.GetBlockHandle(), new_nr_bytes, location, version_tag);
 	buffer = result.Ptr();
 
 	// Interleave reading and copying from cached buffers
 	if (OnDiskFile()) {
 		// On-disk file: prefer interleaving reading and copying from cached buffers
-		ReadAndCopyInterleaved(overlapping_ranges, new_file_range, buffer, nr_bytes, location, true);
+		ReadAndCopyInterleaved(overlapping_ranges, new_file_range, buffer, new_nr_bytes, location, true);
 	} else {
-		// Remote file: prefer interleaving reading and copying from cached buffers only if reduces number of real reads
-		if (ReadAndCopyInterleaved(overlapping_ranges, new_file_range, buffer, nr_bytes, location, false) <= 1) {
-			ReadAndCopyInterleaved(overlapping_ranges, new_file_range, buffer, nr_bytes, location, true);
+		// Remote file: prefer interleaving reading and copying from cached buffers only if reduces number of real
+		// reads
+		if (ReadAndCopyInterleaved(overlapping_ranges, new_file_range, buffer, new_nr_bytes, location, false) <= 1) {
+			ReadAndCopyInterleaved(overlapping_ranges, new_file_range, buffer, new_nr_bytes, location, true);
 		} else {
-			GetFileHandle().Read(buffer, nr_bytes, location);
+			GetFileHandle().Read(context, buffer, new_nr_bytes, location);
 		}
 	}
 
-	return TryInsertFileRange(result, buffer, nr_bytes, location, new_file_range);
+	return TryInsertFileRange(result, buffer, new_nr_bytes, location, new_file_range);
 }
 
 BufferHandle CachingFileHandle::Read(data_ptr_t &buffer, idx_t &nr_bytes) {
@@ -113,17 +168,22 @@ BufferHandle CachingFileHandle::Read(data_ptr_t &buffer, idx_t &nr_bytes) {
 
 	// If we can't seek, we can't use the cache for these calls,
 	// because we won't be able to seek over any parts we skipped by reading from the cache
-	if (!external_file_cache.IsEnabled() || !GetFileHandle().CanSeek()) {
+	if (!external_file_cache.IsEnabled() || !CanSeek()) {
 		result = external_file_cache.GetBufferManager().Allocate(MemoryTag::EXTERNAL_FILE_CACHE, nr_bytes);
 		buffer = result.Ptr();
-		nr_bytes = NumericCast<idx_t>(GetFileHandle().Read(buffer, nr_bytes));
+		nr_bytes = NumericCast<idx_t>(GetFileHandle().Read(context, buffer, nr_bytes));
 		position += NumericCast<idx_t>(nr_bytes);
 		return result;
 	}
 
 	// Try to read from the cache first
 	vector<shared_ptr<CachedFileRange>> overlapping_ranges;
-	result = TryReadFromCache(buffer, nr_bytes, position, overlapping_ranges);
+	{
+		optional_idx start_location_of_next_range;
+		result = TryReadFromCache(buffer, nr_bytes, position, overlapping_ranges, start_location_of_next_range);
+		// start_location_of_next_range is in this case discarded
+	}
+
 	if (result.IsValid()) {
 		position += nr_bytes;
 		return result; // Success
@@ -134,7 +194,7 @@ BufferHandle CachingFileHandle::Read(data_ptr_t &buffer, idx_t &nr_bytes) {
 	buffer = result.Ptr();
 
 	GetFileHandle().Seek(position);
-	nr_bytes = NumericCast<idx_t>(GetFileHandle().Read(buffer, nr_bytes));
+	nr_bytes = NumericCast<idx_t>(GetFileHandle().Read(context, buffer, nr_bytes));
 	auto new_file_range = make_shared_ptr<CachedFileRange>(result.GetBlockHandle(), nr_bytes, position, version_tag);
 
 	result = TryInsertFileRange(result, buffer, nr_bytes, position, new_file_range);
@@ -148,15 +208,15 @@ string CachingFileHandle::GetPath() const {
 }
 
 idx_t CachingFileHandle::GetFileSize() {
-	if (file_handle || validate) {
+	if (file_handle || Validate()) {
 		return GetFileHandle().GetFileSize();
 	}
 	auto guard = cached_file.lock.GetSharedLock();
 	return cached_file.FileSize(guard);
 }
 
-time_t CachingFileHandle::GetLastModifiedTime() {
-	if (file_handle || validate) {
+timestamp_t CachingFileHandle::GetLastModifiedTime() {
+	if (file_handle || Validate()) {
 		GetFileHandle();
 		return last_modified;
 	}
@@ -165,7 +225,7 @@ time_t CachingFileHandle::GetLastModifiedTime() {
 }
 
 string CachingFileHandle::GetVersionTag() {
-	if (file_handle || validate) {
+	if (file_handle || Validate()) {
 		GetFileHandle();
 		return version_tag;
 	}
@@ -174,11 +234,11 @@ string CachingFileHandle::GetVersionTag() {
 }
 
 bool CachingFileHandle::Validate() const {
-	return validate;
+	return ShouldValidate(path, context.GetClientContext(), caching_file_system.db, cached_file.path);
 }
 
 bool CachingFileHandle::CanSeek() {
-	if (file_handle || validate) {
+	if (file_handle || Validate()) {
 		return GetFileHandle().CanSeek();
 	}
 	auto guard = cached_file.lock.GetSharedLock();
@@ -190,7 +250,7 @@ bool CachingFileHandle::IsRemoteFile() const {
 }
 
 bool CachingFileHandle::OnDiskFile() {
-	if (file_handle || validate) {
+	if (file_handle || Validate()) {
 		return GetFileHandle().OnDiskFile();
 	}
 	auto guard = cached_file.lock.GetSharedLock();
@@ -198,15 +258,27 @@ bool CachingFileHandle::OnDiskFile() {
 }
 
 const string &CachingFileHandle::GetVersionTag(const unique_ptr<StorageLockKey> &guard) {
-	if (file_handle || validate) {
+	if (file_handle || Validate()) {
 		GetFileHandle();
 		return version_tag;
 	}
 	return cached_file.VersionTag(guard);
 }
 
+idx_t CachingFileHandle::SeekPosition() {
+	return position;
+}
+
+void CachingFileHandle::Seek(idx_t location) {
+	position = location;
+	if (file_handle != nullptr) {
+		file_handle->Seek(location);
+	}
+}
+
 BufferHandle CachingFileHandle::TryReadFromCache(data_ptr_t &buffer, idx_t nr_bytes, idx_t location,
-                                                 vector<shared_ptr<CachedFileRange>> &overlapping_ranges) {
+                                                 vector<shared_ptr<CachedFileRange>> &overlapping_ranges,
+                                                 optional_idx &start_location_of_next_range) {
 	BufferHandle result;
 
 	// Get read lock for cached ranges
@@ -238,7 +310,8 @@ BufferHandle CachingFileHandle::TryReadFromCache(data_ptr_t &buffer, idx_t nr_by
 	}
 	while (it != ranges.end()) {
 		if (it->second->location >= this_end) {
-			// We're past the requested location
+			// We're past the requested location, we are going to bail out, save start_location_of_next_range
+			start_location_of_next_range = it->second->location;
 			break;
 		}
 		// Check if the cached range overlaps the requested one
@@ -285,11 +358,16 @@ BufferHandle CachingFileHandle::TryInsertFileRange(BufferHandle &pin, data_ptr_t
 	auto &ranges = cached_file.Ranges(guard);
 
 	// Start at lower_bound (first range with location not less than location of newly created range)
+	const auto this_end = location + nr_bytes;
 	auto it = ranges.lower_bound(location);
 	if (it != ranges.begin()) {
 		--it;
 	}
 	while (it != ranges.end()) {
+		if (it->second->location >= this_end) {
+			// We're past the requested location
+			break;
+		}
 		if (it->second->GetOverlap(*new_file_range) == CachedFileRangeOverlap::FULL) {
 			// Another thread has read a range that fully contains the requested range in the meantime
 			auto other_pin = TryReadFromFileRange(guard, *it->second, buffer, nr_bytes, location);
@@ -300,11 +378,9 @@ BufferHandle CachingFileHandle::TryInsertFileRange(BufferHandle &pin, data_ptr_t
 			continue;
 		}
 		// Check if the new range overlaps with a cached one
-		bool break_loop = false;
 		switch (new_file_range->GetOverlap(*it->second)) {
 		case CachedFileRangeOverlap::NONE:
-			break_loop = true; // We iterated past potential overlaps
-			break;
+			break; // No overlap, still useful
 		case CachedFileRangeOverlap::PARTIAL:
 			break; // The newly created range does not fully contain this range, so it is still useful
 		case CachedFileRangeOverlap::FULL:
@@ -314,9 +390,6 @@ BufferHandle CachingFileHandle::TryInsertFileRange(BufferHandle &pin, data_ptr_t
 			continue;
 		default:
 			throw InternalException("Unknown CachedFileRangeOverlap");
-		}
-		if (break_loop) {
-			break;
 		}
 
 		++it;
@@ -351,7 +424,7 @@ idx_t CachingFileHandle::ReadAndCopyInterleaved(const vector<shared_ptr<CachedFi
 			const auto bytes_to_read = overlapping_range->location - current_location;
 			D_ASSERT(bytes_to_read < remaining_bytes);
 			if (actually_read) {
-				GetFileHandle().Read(buffer + buffer_offset, bytes_to_read, current_location);
+				GetFileHandle().Read(context, buffer + buffer_offset, bytes_to_read, current_location);
 			}
 			current_location += bytes_to_read;
 			remaining_bytes -= bytes_to_read;
@@ -385,7 +458,7 @@ idx_t CachingFileHandle::ReadAndCopyInterleaved(const vector<shared_ptr<CachedFi
 	if (remaining_bytes != 0) {
 		const auto buffer_offset = nr_bytes - remaining_bytes;
 		if (actually_read) {
-			GetFileHandle().Read(buffer + buffer_offset, remaining_bytes, current_location);
+			GetFileHandle().Read(context, buffer + buffer_offset, remaining_bytes, current_location);
 		}
 		non_cached_read_count++;
 	}
