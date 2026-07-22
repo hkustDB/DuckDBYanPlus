@@ -8,9 +8,12 @@
 #include "duckdb/planner/operator/logical_projection.hpp"
 #include "duckdb/planner/operator/logical_distinct.hpp"
 
+#include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
-#include "duckdb/function/scalar_function.hpp" 
-#include "duckdb/common/operator/multiply.hpp" 
+#include "duckdb/planner/expression/bound_constant_expression.hpp"
+#include "duckdb/planner/expression/bound_operator_expression.hpp"
+#include "duckdb/function/scalar_function.hpp"
+#include "duckdb/common/operator/multiply.hpp"
 #include "duckdb/function/scalar/operators.hpp"
 
 #include "duckdb/function/aggregate/distributive_functions.hpp"
@@ -21,21 +24,21 @@
 #include "duckdb/catalog/catalog_entry/aggregate_function_catalog_entry.hpp"
 
 #include "duckdb/common/exception.hpp"
-#include "duckdb/function/function_binder.hpp"
 #include "duckdb/planner/expression/list.hpp"
 
-#include <iostream>
 #include "duckdb/optimizer/setting.hpp"
 
-
 namespace duckdb {
-// Aggregation Function Support for SUM
-AggregateFunction GetSumAggregate(PhysicalType type);
 
-// staic variables declaration
-vector<AggregationPushdown::AggColumnInfo> AggregationPushdown::minmax_columns;
-unordered_set<string> AggregationPushdown::alias_set;
-vector<AggregationPushdown::SumAggInfo> AggregationPushdown::sum_aggregates; // Currently test for one sum aggregation only
+// SUM is implemented by the core_functions extension in DuckDB v1.5. Resolve it
+// through the catalog instead of depending on the extension's private
+// GetSumAggregate(PhysicalType) helper from the core optimizer library.
+static AggregateFunction GetSumAggregate(ClientContext &context, const LogicalType &input_type) {
+    vector<LogicalType> argument_types = {input_type};
+    auto &catalog = Catalog::GetSystemCatalog(context);
+    auto &entry = catalog.GetEntry<AggregateFunctionCatalogEntry>(context, DEFAULT_SCHEMA, "sum");
+    return entry.functions.GetFunctionByArguments(context, argument_types);
+}
 
 void AggregationPushdown::AddAlias(const string& alias) {
     if (!alias.empty()) {
@@ -48,9 +51,6 @@ bool AggregationPushdown::HasAlias(const string& alias) const {
 size_t AggregationPushdown::GetAliasCount() const {
     return alias_set.size();
 }
-
-vector<AggregationPushdown::JoinInfo> AggregationPushdown::join_pushdown_info;
-
 
 // Aggregation Function Support for MIN
 AggregateFunction GetMinAggregate(ClientContext &context, const LogicalType &input_type) {
@@ -83,9 +83,17 @@ AggregateFunction GetMaxAggregate(ClientContext &context, const LogicalType &inp
 
 // Part1
 unique_ptr<LogicalOperator> AggregationPushdown::Rewrite(unique_ptr<LogicalOperator> op) {
+    if (!IsSupportedRootShape(op.get())) {
+        return op;
+    }
     global_binding_map.clear();
     minmax_columns.clear();
     sum_aggregates.clear();
+    groupby_columns.clear();
+    alias_set.clear();
+    join_pushdown_info.clear();
+    current_join_id = 0;
+    join_counter = 0;
     if (query_type == QueryType::MINMAX_AGGREGATE) {
         StoreMinMaxAggregates(op->children[0].get());
     } else if (query_type == QueryType::SUM) {
@@ -100,9 +108,15 @@ unique_ptr<LogicalOperator> AggregationPushdown::Rewrite(unique_ptr<LogicalOpera
 
 // Part3
 unique_ptr<LogicalOperator> AggregationPushdown::ApplyAgg(unique_ptr<LogicalOperator> op) {
+    if (!IsSupportedRootShape(op.get())) {
+        return op;
+    }
     global_binding_map.clear();
     minmax_columns.clear();
     sum_aggregates.clear();
+    groupby_columns.clear();
+    alias_set.clear();
+    current_join_id = 0;
     if (query_type == QueryType::MINMAX_AGGREGATE) {
         StoreMinMaxAggregates(op->children[0].get());
     } else if (query_type == QueryType::SUM) {
@@ -117,12 +131,85 @@ unique_ptr<LogicalOperator> AggregationPushdown::ApplyAgg(unique_ptr<LogicalOper
 
 // Part2
 unique_ptr<LogicalOperator> AggregationPushdown::UpdateBinding(unique_ptr<LogicalOperator> op) {
-    op = PruneAggregation(std::move(op), &AggregationPushdown::PruneAggregationWithProjectionMap);
+	// Each pruning pass rewrites one generation of bindings. Keeping mappings
+	// from a previous pass can apply the same projection remap twice.
+	global_binding_map.clear();
+	op = PruneAggregation(std::move(op), &AggregationPushdown::PruneAggregationWithProjectionMap);
     op = UpdateAnnotMul(std::move(op));
     return op;
 }
 
+bool AggregationPushdown::IsSupportedRootShape(const LogicalOperator* op) const {
+    if (!op) {
+        return false;
+    }
+    if (query_type == QueryType::SELECT_DISTINCT) {
+        if (op->type != LogicalOperatorType::LOGICAL_DISTINCT || op->children.size() != 1 ||
+            op->children[0]->type != LogicalOperatorType::LOGICAL_PROJECTION) {
+            return false;
+        }
+        auto &distinct = op->Cast<LogicalDistinct>();
+        return distinct.distinct_type == DistinctType::DISTINCT && !distinct.order_by;
+    }
+    if (op->type != LogicalOperatorType::LOGICAL_PROJECTION || op->children.size() != 1 ||
+        op->children[0]->type != LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY) {
+        return false;
+    }
+
+    auto &projection = op->Cast<LogicalProjection>();
+    auto &aggregate = op->children[0]->Cast<LogicalAggregate>();
+    if (aggregate.children.size() != 1 || !aggregate.groups.empty() || !aggregate.grouping_sets.empty() ||
+        !aggregate.grouping_functions.empty() || aggregate.expressions.empty() ||
+        projection.expressions.size() != aggregate.expressions.size()) {
+        return false;
+    }
+	if (aggregate.expressions.size() != 1) {
+		return false;
+	}
+
+    for (auto &projection_expr : projection.expressions) {
+        if (projection_expr->GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF) {
+            return false;
+        }
+        auto &column_ref = projection_expr->Cast<BoundColumnRefExpression>();
+        if (column_ref.binding.table_index != aggregate.aggregate_index) {
+            return false;
+        }
+    }
+    for (auto &expression : aggregate.expressions) {
+        if (expression->GetExpressionClass() != ExpressionClass::BOUND_AGGREGATE) {
+            return false;
+        }
+        auto &bound_aggregate = expression->Cast<BoundAggregateExpression>();
+        if (bound_aggregate.IsDistinct() || bound_aggregate.filter || bound_aggregate.order_bys) {
+            return false;
+        }
+        if (query_type == QueryType::COUNT_STAR) {
+            if (bound_aggregate.function.name != "count_star" || !bound_aggregate.children.empty()) {
+                return false;
+            }
+        } else if (query_type == QueryType::SUM) {
+            if (bound_aggregate.function.name != "sum" || bound_aggregate.children.size() != 1 ||
+                bound_aggregate.children[0]->GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF) {
+                return false;
+            }
+        } else if (query_type == QueryType::MINMAX_AGGREGATE) {
+            if ((bound_aggregate.function.name != "min" && bound_aggregate.function.name != "max") ||
+                bound_aggregate.children.size() != 1 ||
+                bound_aggregate.children[0]->GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF) {
+                return false;
+            }
+        } else {
+            return false;
+        }
+    }
+    return true;
+}
+
 void AggregationPushdown::StoreMinMaxAggregates(LogicalOperator* op) {
+    if (!op || op->type != LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY) {
+        return;
+    }
     auto& agg = op->Cast<LogicalAggregate>();
     for (idx_t i = 0; i < agg.expressions.size(); i++) {
         auto& expr = agg.expressions[i];
@@ -202,12 +289,14 @@ void AggregationPushdown::ExtractColumnsFromSumExpression(Expression* expr, vect
         // Recursively extract from the child expression
         ExtractColumnsFromSumExpression(cast_expr.child.get(), columns);
     } else {
-        std::cout << "Unsupported expression type in SUM aggregate: " << ExpressionTypeToString(expr->type) << std::endl;
-        throw std::runtime_error("Unsupported expression type in SUM aggregate");
+        return;
     }
 }
 
 void AggregationPushdown::StoreSumAggregates(LogicalOperator* op) {
+    if (!op || op->type != LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY) {
+        return;
+    }
     auto &agg = op->Cast<LogicalAggregate>();
     // Store group by columns
     for (idx_t i = 0; i < agg.groups.size(); i++) {
@@ -237,7 +326,11 @@ void AggregationPushdown::StoreSumAggregates(LogicalOperator* op) {
                 sum_info.result_binding = ColumnBinding(agg.aggregate_index, i);
                 sum_info.result_type = bound_agg.return_type;
                 // FIXME: Whether here store the aggregation fucntion alias
-                sum_info.alias = bound_agg.alias;
+                // Bound aggregates without an explicit SQL alias carry an
+                // empty alias in v1.5. Give the partial SUM a stable internal
+                // name so it remains distinguishable from group keys and can
+                // be multiplied by the opposite branch's count annotation.
+                sum_info.alias = bound_agg.alias.empty() ? "__yanplus_sum_annot" : bound_agg.alias;
                 AddAlias(sum_info.alias);
                 // Store the involved columns
                 for (const auto &child : bound_agg.children) {
@@ -254,8 +347,8 @@ void AggregationPushdown::StoreSumAggregates(LogicalOperator* op) {
                         // Handle CASE expressions
                         ExtractColumnsFromSumExpression(child.get(), sum_info.involved_columns);
                     } else {
-                        std::cout << "No processing for child expression type in SUM aggregate store: " << ExpressionTypeToString(child->type) << std::endl;
-                        // throw std::runtime_error("Unsupported child expression type in SUM aggregate");
+                        // Unsupported SUM arguments are rejected by
+                        // IsSupportedRootShape and remain on DuckDB's native path.
                     }
                 }
 
@@ -270,9 +363,12 @@ void AggregationPushdown::StoreSumAggregates(LogicalOperator* op) {
 }
 
 void AggregationPushdown::StoreDistinctAggregates(LogicalOperator* op) {
+    if (!op || op->type != LogicalOperatorType::LOGICAL_DISTINCT) {
+        return;
+    }
     auto &distinct = op->Cast<LogicalDistinct>();
     if (distinct.children.empty()) {
-        throw std::runtime_error("DISTINCT operator has no children");
+        return;
     }
     auto child_bindings = distinct.children[0]->GetColumnBindings();
     auto child_types = distinct.children[0]->types;
@@ -291,27 +387,27 @@ unique_ptr<LogicalOperator> AggregationPushdown::ReplaceRootCountWithSum(unique_
     if (!op_node) {
         return op_node;
     }
+    if (!IsSupportedRootShape(op_node.get())) {
+        return op_node;
+    }
 
-    // Check if this is the root aggregate with COUNT(*)
-    if (query_type == QueryType::COUNT_STAR) {
-        auto &agg = op_node->children[0]->Cast<LogicalAggregate>();
-        auto child_bindings = agg.children[0]->GetColumnBindings();
-        agg.children[0]->ResolveOperatorTypes();
-        auto child_types = agg.children[0]->types;
-        // Search for annot column in the child
-        ColumnBinding annot_binding;
-        LogicalType annot_type; // Default, adjust if needed
-        if (agg.children.size() > 0 && 
-            FindAnnotAttribute(agg.children[0].get(), annot_binding, annot_type)) {
+	// Check if this is the root aggregate with COUNT(*)
+	if (query_type == QueryType::COUNT_STAR) {
+		auto &agg = op_node->children[0]->Cast<LogicalAggregate>();
+		auto &proj = op_node->Cast<LogicalProjection>();
+		const auto count_return_type = agg.expressions[0]->return_type;
+		const auto count_alias = proj.expressions[0]->alias;
+		const auto aggregate_alias = agg.expressions[0]->alias;
+		// Search for annot column in the child
+		ColumnBinding annot_binding;
+		LogicalType annot_type; // Default, adjust if needed
+		if (agg.children.size() > 0 &&
+		    FindAnnotAttribute(agg.children[0].get(), annot_binding, annot_type)) {
             
             // Found annot - replace COUNT(*) with SUM(annot)
             vector<unique_ptr<Expression>> sum_args;
                 
-            // Try to get the actual type from bindings
-            auto child_types = agg.children[0]->types;
-            auto child_bindings = agg.children[0]->GetColumnBindings();
-                
-            // Create reference to annot column
+			// Create reference to annot column
             auto annot_col_ref = make_uniq<BoundColumnRefExpression>(
                 // "annot",
                 annot_type,
@@ -320,38 +416,46 @@ unique_ptr<LogicalOperator> AggregationPushdown::ReplaceRootCountWithSum(unique_
                 
             sum_args.push_back(std::move(annot_col_ref));
                 
-            AggregateFunction sum_function = GetSumAggregate(annot_type.InternalType());
+            AggregateFunction sum_function = GetSumAggregate(context, annot_type);
             if (sum_function.name.empty()) {
                 sum_function.name = "sum";  // Explicitly set the name
             }       
 
             FunctionBinder function_binder(context);
-            auto sum_expr = function_binder.BindAggregateFunction(
+			auto sum_expr = function_binder.BindAggregateFunction(
                 sum_function, 
                 std::move(sum_args), 
                 nullptr, 
-                AggregateType::NON_DISTINCT
-            );
-            // Replace the expression
-            agg.expressions[0] = std::move(sum_expr);
+			    AggregateType::NON_DISTINCT
+			);
+			sum_expr->alias = aggregate_alias;
+			// Replace the expression
+			agg.expressions[0] = std::move(sum_expr);
 
             // Update the bindings in the aggregate node
             for (auto &group : agg.groups) {
                 UpdateExpressionBindings(group.get());
             }   
             
-            // NOTE: Adjust projection column to annot only
-            auto &proj = op_node->Cast<LogicalProjection>();
-            vector<unique_ptr<Expression>> new_proj_exprs;
+			// COUNT(*) returns BIGINT zero on empty input, whereas SUM(annotation)
+			// returns NULL and can have a wider internal type. Restore both parts
+			// of COUNT's contract in the root projection.
+			vector<unique_ptr<Expression>> new_proj_exprs;
 
-            auto agg_binding = ColumnBinding(agg.aggregate_index, 0);
-            auto annot_col_ref_proj = make_uniq<BoundColumnRefExpression>(
-                agg.expressions[0]->return_type, // Get the type from the aggregate expression
-                agg_binding                      // Use aggregate's binding, not the input binding
-            );
-                
-            // Add only this expression to the projection
-            new_proj_exprs.push_back(std::move(annot_col_ref_proj));
+			auto agg_binding = ColumnBinding(agg.aggregate_index, 0);
+			unique_ptr<Expression> count_result = make_uniq<BoundColumnRefExpression>(
+			    agg.expressions[0]->return_type, // Get the type from the aggregate expression
+			    agg_binding                      // Use aggregate's binding, not the input binding
+			);
+			count_result =
+			    BoundCastExpression::AddCastToType(context, std::move(count_result), count_return_type);
+			auto coalesce =
+			    make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_COALESCE, count_return_type);
+			coalesce->children.push_back(std::move(count_result));
+			coalesce->children.push_back(
+			    make_uniq<BoundConstantExpression>(Value::Numeric(count_return_type, 0)));
+			coalesce->alias = count_alias;
+			new_proj_exprs.push_back(std::move(coalesce));
                 
             // Replace all projection expressions with just the annot
             proj.expressions = std::move(new_proj_exprs);
@@ -448,7 +552,7 @@ unique_ptr<LogicalOperator> AggregationPushdown::ReplaceRootCountWithSum(unique_
                     child_bindings[found_column_index]
                 );
                 sum_args.push_back(std::move(col_ref));
-                AggregateFunction sum_function = GetSumAggregate(child_types[found_column_index].InternalType());
+                AggregateFunction sum_function = GetSumAggregate(context, child_types[found_column_index]);
                 if (sum_function.name.empty()) {
                     sum_function.name = "sum";  // Explicitly set the name
                 }
@@ -481,7 +585,7 @@ unique_ptr<LogicalOperator> AggregationPushdown::ReplaceRootCountWithSum(unique_
                                 bound_agg.children.push_back(std::move(annot_col_ref));
                     
                                 // Update function to SUM
-                                AggregateFunction sum_function = GetSumAggregate(annot_type.InternalType());
+                                AggregateFunction sum_function = GetSumAggregate(context, annot_type);
                                 if (sum_function.name.empty()) {
                                     sum_function.name = "sum";
                                 }
@@ -628,7 +732,6 @@ bool AggregationPushdown::CheckPKFK(LogicalOperator* op) {
 }
 
 unique_ptr<LogicalOperator> AggregationPushdown::AddAnnotAttributeDFS(unique_ptr<LogicalOperator> op_node, bool applyFlag) {
-    static int current_join_id = 0;
     if (!op_node) {
         return op_node;
     }
@@ -857,13 +960,13 @@ unique_ptr<LogicalOperator> AggregationPushdown::AddAnnotAttributeDFS(unique_ptr
                 auto projection = AddProjectionWithAnnot(std::move(op_node), std::move(mult_expr), annot_alias, bindings_to_exclude);
                 return projection;
             } else {
-                throw std::runtime_error("Unsupported number of annot expressions in AddAnnotAttributeDFS");
+                return std::move(op_node);
             }
 
         } else if (query_type == QueryType::SELECT_DISTINCT) {
             return std::move(op_node);
         } else {
-            throw std::runtime_error("Not implemented in AddAnnotAttributeDFS");
+            return std::move(op_node);
         }
     } else {
         return std::move(op_node);
@@ -872,8 +975,12 @@ unique_ptr<LogicalOperator> AggregationPushdown::AddAnnotAttributeDFS(unique_ptr
 
 // Returns all annotation columns from an operator
 bool AggregationPushdown::FindAllAnnotAttributes(LogicalOperator* op, vector<ColumnBinding>& annot_binding, vector<LogicalType>& annot_type) {
+    if (!op) {
+        return false;
+    }
     // Check in expressions for special operators
     if (op->type == LogicalOperatorType::LOGICAL_PROJECTION) {
+        auto original_count = annot_binding.size();
         auto& proj = op->Cast<LogicalProjection>();
         for (idx_t i = 0; i < proj.expressions.size(); i++) {
             auto& expr = proj.expressions[i];
@@ -884,8 +991,8 @@ bool AggregationPushdown::FindAllAnnotAttributes(LogicalOperator* op, vector<Col
                 annot_type.push_back(expr->return_type);
             }
         }
-        return annot_binding.size() > 0;
-    } else if (op->type == LogicalOperatorType::LOGICAL_GET || op->type == LogicalOperatorType::LOGICAL_FILTER) {
+        return annot_binding.size() > original_count;
+    } else if (op->type == LogicalOperatorType::LOGICAL_GET) {
         return false;
     } else if (op->type == LogicalOperatorType::LOGICAL_COMPARISON_JOIN ||
                op->type == LogicalOperatorType::LOGICAL_ASOF_JOIN ||
@@ -902,16 +1009,20 @@ bool AggregationPushdown::FindAllAnnotAttributes(LogicalOperator* op, vector<Col
         }
         
         return found_any;
-    } else {
-        std::cout << "Logical operator type: " << (int)op->type << std::endl;
-        throw std::runtime_error("Unsupported operator type for FindAllAnnotAttributes");
+    } else if (op->children.size() == 1) {
+        return FindAllAnnotAttributes(op->children[0].get(), annot_binding, annot_type);
     }
+    return false;
 }
 
 // Returns all annotation columns from an operator
 bool AggregationPushdown::FindAllAnnotAttributes(LogicalOperator* op, vector<ColumnBinding>& annot_binding, vector<LogicalType>& annot_type, vector<string>& alias_name) {
+    if (!op) {
+        return false;
+    }
     // Check in expressions for special operators
     if (op->type == LogicalOperatorType::LOGICAL_PROJECTION) {
+        auto original_count = annot_binding.size();
         auto& proj = op->Cast<LogicalProjection>();
         for (idx_t i = 0; i < proj.expressions.size(); i++) {
             auto& expr = proj.expressions[i];
@@ -923,8 +1034,8 @@ bool AggregationPushdown::FindAllAnnotAttributes(LogicalOperator* op, vector<Col
                 alias_name.push_back(expr->GetName());
             }
         }
-        return annot_binding.size() > 0;
-    } else if (op->type == LogicalOperatorType::LOGICAL_GET || op->type == LogicalOperatorType::LOGICAL_FILTER) {
+        return annot_binding.size() > original_count;
+    } else if (op->type == LogicalOperatorType::LOGICAL_GET) {
         return false;
     } else if (op->type == LogicalOperatorType::LOGICAL_COMPARISON_JOIN ||
                op->type == LogicalOperatorType::LOGICAL_ASOF_JOIN ||
@@ -932,22 +1043,25 @@ bool AggregationPushdown::FindAllAnnotAttributes(LogicalOperator* op, vector<Col
         auto& join = op->Cast<LogicalComparisonJoin>();
         bool found_any = false;
 
-        if (FindAllAnnotAttributes(join.children[0].get(), annot_binding, annot_type)) {
+        if (FindAllAnnotAttributes(join.children[0].get(), annot_binding, annot_type, alias_name)) {
             found_any = true;
         }
 
-        if (FindAllAnnotAttributes(join.children[1].get(), annot_binding, annot_type)) {
+        if (FindAllAnnotAttributes(join.children[1].get(), annot_binding, annot_type, alias_name)) {
             found_any = true;
         }
         
         return found_any;
-    } else {
-        std::cout << "Logical operator type: " << (int)op->type << std::endl;
-        throw std::runtime_error("Unsupported operator type for FindAllAnnotAttributes");
+    } else if (op->children.size() == 1) {
+        return FindAllAnnotAttributes(op->children[0].get(), annot_binding, annot_type, alias_name);
     }
+    return false;
 }
 
 bool AggregationPushdown::FindAnnotAttribute(LogicalOperator* op, ColumnBinding& annot_binding, LogicalType& annot_type) {
+    if (!op) {
+        return false;
+    }
     // Check in expressions for special operators
     if (op->type == LogicalOperatorType::LOGICAL_PROJECTION) {
         auto& proj = op->Cast<LogicalProjection>();
@@ -960,7 +1074,7 @@ bool AggregationPushdown::FindAnnotAttribute(LogicalOperator* op, ColumnBinding&
                 return true;
             }
         }
-    } else if (op->type == LogicalOperatorType::LOGICAL_GET || op->type == LogicalOperatorType::LOGICAL_FILTER) {
+    } else if (op->type == LogicalOperatorType::LOGICAL_GET) {
         return false;
     } else if (op->type == LogicalOperatorType::LOGICAL_COMPARISON_JOIN ||
                op->type == LogicalOperatorType::LOGICAL_ASOF_JOIN ||
@@ -978,9 +1092,8 @@ bool AggregationPushdown::FindAnnotAttribute(LogicalOperator* op, ColumnBinding&
         }
         
         return found_any;
-    } else {
-        std::cout << "Logical operator type: " << (int)op->type << std::endl;
-        throw std::runtime_error("Unsupported operator type for FindAnnotAttribute");
+    } else if (op->children.size() == 1) {
+        return FindAnnotAttribute(op->children[0].get(), annot_binding, annot_type);
     }
 
     return false;
@@ -1275,7 +1388,7 @@ unique_ptr<LogicalOperator> AggregationPushdown::CreateDynamicAggregate(unique_p
             
             sum_args.push_back(std::move(annot_col_ref));
             
-            AggregateFunction sum_function = GetSumAggregate(child_types[annot_idx].InternalType());
+            AggregateFunction sum_function = GetSumAggregate(context, child_types[annot_idx]);
             if (sum_function.name.empty()) {
                 sum_function.name = "sum";
             }
@@ -1340,7 +1453,7 @@ unique_ptr<LogicalOperator> AggregationPushdown::CreateDynamicAggregate(unique_p
             );
             sum_args.push_back(std::move(annot_col_ref));
             
-            AggregateFunction sum_function = GetSumAggregate(child_types[annot_idx].InternalType());
+            AggregateFunction sum_function = GetSumAggregate(context, child_types[annot_idx]);
             if (sum_function.name.empty()) {
                 sum_function.name = "sum";
             }
@@ -1440,7 +1553,7 @@ unique_ptr<LogicalOperator> AggregationPushdown::CreateDynamicAggregate(unique_p
                         auto constant_one = make_uniq<BoundConstantExpression>(Value::INTEGER(1));
                         sum_args.push_back(std::move(constant_one));
             
-                        AggregateFunction sum_function = GetSumAggregate(LogicalType(LogicalTypeId::INTEGER).InternalType());
+                        AggregateFunction sum_function = GetSumAggregate(context, LogicalType::INTEGER);
                         if (sum_function.name.empty()) {
                             sum_function.name = "sum";
                         }
@@ -1710,10 +1823,12 @@ string AggregationPushdown::GetColumnName(LogicalOperator* op, idx_t idx) {
             // Column from right child
             return GetColumnName(join.children[1].get(), idx - left_count);
         }
-    } else if (op->type == LogicalOperatorType::LOGICAL_FILTER) {
-        if (!op->children.empty()) {
-            return GetColumnName(op->children[0].get(), idx);
-        }
+	} else if (op->type == LogicalOperatorType::LOGICAL_FILTER ||
+	           op->type == LogicalOperatorType::LOGICAL_CREATE_BF ||
+	           op->type == LogicalOperatorType::LOGICAL_USE_BF) {
+		if (!op->children.empty()) {
+			return GetColumnName(op->children[0].get(), idx);
+		}
     } else {
         throw NotImplementedException("GetColumnName not implemented for this operator type");
     }
@@ -1765,7 +1880,7 @@ unique_ptr<LogicalOperator> AggregationPushdown::PruneAggregation(unique_ptr<Log
 // Update annot1 * annot2 to the correct column references, only complex function can't change binding automatically
 unique_ptr<LogicalOperator> AggregationPushdown::UpdateAnnotMul(unique_ptr<LogicalOperator> op_node) {
     if (!op_node) {
-        op_node;
+        return op_node;
     }
     
     // First process children recursively
@@ -1801,6 +1916,7 @@ unique_ptr<LogicalOperator> AggregationPushdown::UpdateAnnotMul(unique_ptr<Logic
                     right_has_annot = FindAnnotAttribute(join.children[1].get(), right_annot, right_type);
                     
                     if (left_has_annot && right_has_annot) {
+                        auto annotation_alias = last_expr->GetName();
                         // Update the column references in the multiplication expression
                         for (idx_t i = 0; i < func_expr.children.size(); i++) {
                             auto& child = func_expr.children[i];
@@ -1811,19 +1927,37 @@ unique_ptr<LogicalOperator> AggregationPushdown::UpdateAnnotMul(unique_ptr<Logic
                                     // std ::cout << "Updating left child binding" << std::endl;
                                     // std::cout << left_annot.ToString() << std::endl;
                                     col_ref.binding = left_annot;
+                                    col_ref.return_type = left_type;
                                 }
                                 // Second child's binding should be right annot
                                 else if (i == 1) {
                                     // std::cout << "Updating right child binding" << std::endl;
                                     // std::cout << right_annot.ToString() << std::endl;
                                     col_ref.binding = right_annot;
+                                    col_ref.return_type = right_type;
                                 }
                             }
                         }
-                        // std::cout << "Updated multiplication expression bindings for annot" << std::endl;
-                    } else {
-                        // FIXME: 
-                        throw std::runtime_error("Annot attribute not found in join children");
+
+                        // Binding changes can also change the numeric overload
+                        // (e.g., COUNT annotations are BIGINT in v1.5). Rebind
+                        // multiplication so its function and return type match
+                        // the rewritten children instead of retaining an old
+                        // INTEGER overload.
+                        vector<unique_ptr<Expression>> multiplication_children;
+                        for (auto &child : func_expr.children) {
+                            multiplication_children.push_back(std::move(child));
+                        }
+                        FunctionBinder function_binder(context);
+                        ErrorData error;
+                        auto rebound = function_binder.BindScalarFunction(DEFAULT_SCHEMA, "*",
+                                                                          std::move(multiplication_children), error,
+                                                                          true, nullptr);
+                        if (rebound) {
+                            rebound->alias = annotation_alias;
+                            last_expr = std::move(rebound);
+                            proj.ResolveOperatorTypes();
+                        }
                     }
                 }
             }
@@ -2081,7 +2215,6 @@ unique_ptr<LogicalOperator> AggregationPushdown::PruneAggregationWithProjectionM
                             } else {
                                 // NOTE: why skip for type bound_function
                                 // Actually for complex fucntion, we can skip, because it must be the root original aggregation node, we will do the replacement at the root
-                                std::cout << "Unsupported expression type: " << ExpressionTypeToString(child->type) << std::endl;
                                 continue;
                             }
                         }
@@ -2185,7 +2318,6 @@ bool AggregationPushdown::AggPruneRules(unique_ptr<LogicalOperator>& op) {
                 double reduction_ratio = static_cast<double>(child_cardinality) / static_cast<double>(agg_cardinality);
                 
                 if (reduction_ratio <= 1.1) {
-                    std::cout << "Reduction ratio: " << reduction_ratio << std::endl;
                     return false;
                 }
             }
@@ -2197,7 +2329,6 @@ bool AggregationPushdown::AggPruneRules(unique_ptr<LogicalOperator>& op) {
         }
     } else if (op->type == LogicalOperatorType::LOGICAL_DISTINCT) {
         auto &distinct = op->Cast<LogicalDistinct>();
-        std::cout << "Distinct targets: " << distinct.distinct_targets.size() << std::endl;
         if (distinct.distinct_targets.size() <= GROUP_BY_NUM) {
             return true;
         }
@@ -2206,7 +2337,6 @@ bool AggregationPushdown::AggPruneRules(unique_ptr<LogicalOperator>& op) {
 }
 
 void AggregationPushdown::RecordAggPushdown(unique_ptr<LogicalOperator>& op) {
-    static int join_counter = 0;
     if (!op) {
         return ;
     }

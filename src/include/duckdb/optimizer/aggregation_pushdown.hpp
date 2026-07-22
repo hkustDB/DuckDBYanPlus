@@ -59,7 +59,8 @@ public:
             : expression_string(other.expression_string),
               involved_columns(other.involved_columns),
               result_binding(other.result_binding),
-              result_type(other.result_type) {
+              result_type(other.result_type),
+              alias(other.alias) {
             if (other.expression_tree) {
                 expression_tree = other.expression_tree->Copy();
             }
@@ -72,6 +73,7 @@ public:
                 involved_columns = other.involved_columns;
                 result_binding = other.result_binding;
                 result_type = other.result_type;
+                alias = other.alias;
                 if (other.expression_tree) {
                     expression_tree = other.expression_tree->Copy();
                 } else {
@@ -190,16 +192,24 @@ public:
     
 
 private:
+    //! Aggregation pushdown intentionally supports a narrow logical-plan shape.
+    //! Keep this check local as a final defense against callers classifying a
+    //! wrapper, grouping-set, or complex aggregate as a supported Yan+ query.
+    bool IsSupportedRootShape(const LogicalOperator* op) const;
+
     Binder &binder;
     ClientContext &context;
     QueryType query_type;
 
+    int current_join_id = 0;
+    int join_counter = 0;
+
     std::unordered_map<ColumnBinding, ColumnBinding, ColumnBindingHashFunction> global_binding_map;
     vector<AggColumnInfo> groupby_columns;             // Store the column biding in group by part
-    static vector<SumAggInfo> sum_aggregates;       // Store SUM aggregate info
-    static vector<AggColumnInfo> minmax_columns;    // Store MIN/MAX column info
-    static unordered_set<string> alias_set;         // Fast lookup set for all aliases
-    static vector<JoinInfo> join_pushdown_info;
+    vector<SumAggInfo> sum_aggregates;       // Store SUM aggregate info
+    vector<AggColumnInfo> minmax_columns;    // Store MIN/MAX column info
+    unordered_set<string> alias_set;         // Fast lookup set for all aliases
+    vector<JoinInfo> join_pushdown_info;
 };
 
 } // namespace duckdb

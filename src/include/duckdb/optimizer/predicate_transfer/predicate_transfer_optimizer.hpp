@@ -5,8 +5,6 @@
 #include "duckdb/planner/operator/logical_use_bf.hpp"
 
 namespace duckdb {
-using BloomFilters = vector<shared_ptr<BloomFilter>>;
-
 class PredicateTransferOptimizer {
 public:
 	explicit PredicateTransferOptimizer(ClientContext &context) : graph_manager(context) {
@@ -20,7 +18,7 @@ public:
 	//! order optimization, because it cannot handle newly inserted operator correctly.
 	unique_ptr<LogicalOperator> Optimize(unique_ptr<LogicalOperator> plan);
 
-	vector<LogicalOperator*> GetBFOrder();
+	vector<LogicalOperator *> GetBFOrder();
 	void PrintDAGManager();
 
 private:

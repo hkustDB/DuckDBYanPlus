@@ -2,10 +2,6 @@
 # This file specifies intentionally untracked files that git should ignore.
 #==============================================================================#
 
-#p
-#
-#p
-#q
 #==============================================================================#
 # File extensions to be ignored anywhere in the tree.
 #==============================================================================#
@@ -361,13 +357,4 @@ extension_external
 .venv-pyodide
 
 test/sql/pragma/output.json
-tools/pythonpkg/duckdb_build/i
-
-# db store
-*_db*
-log*.txt
-time*.txt
-tpch_100/*
-job_agg_*/*
-*_test/*
-test_tpch.sql
+tools/pythonpkg/duckdb_build/

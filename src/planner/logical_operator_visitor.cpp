@@ -217,13 +217,6 @@ void LogicalOperatorVisitor::EnumerateExpressions(LogicalOperator &op,
 }
 
 void LogicalOperatorVisitor::VisitOperatorExpressions(LogicalOperator &op) {
-	/*
-	try {
-        std::cout << "Visiting expressions of operator: " << op.GetName() << "\n";
-        op.Print();
-    } catch (const std::exception& e) {
-        std::cout << "Error printing operator info: " << e.what() << "\n";
-    }*/
 	LogicalOperatorVisitor::EnumerateExpressions(op, [&](unique_ptr<Expression> *child) { VisitExpression(child); });
 }
 

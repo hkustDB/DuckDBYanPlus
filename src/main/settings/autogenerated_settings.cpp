@@ -180,4 +180,11 @@ void ValidateExternalFileCacheSetting::OnSet(SettingCallbackInfo &info, Value &p
 	EnumUtil::FromString<CacheValidationMode>(StringValue::Get(parameter));
 }
 
+//===----------------------------------------------------------------------===//
+// Yanplus Semijoin Filter
+//===----------------------------------------------------------------------===//
+void YanplusSemijoinFilterSetting::OnSet(SettingCallbackInfo &info, Value &parameter) {
+	EnumUtil::FromString<YanplusSemiJoinFilterType>(StringValue::Get(parameter));
+}
+
 } // namespace duckdb

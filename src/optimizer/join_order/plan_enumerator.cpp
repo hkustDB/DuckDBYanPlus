@@ -4,6 +4,7 @@
 #include "duckdb/optimizer/join_order/join_node.hpp"
 #include "duckdb/optimizer/join_order/query_graph_manager.hpp"
 #include "duckdb/main/settings.hpp"
+#include "duckdb/planner/expression/bound_comparison_expression.hpp"
 
 #include <cmath>
 
@@ -499,6 +500,360 @@ void PlanEnumerator::SolveJoinOrder() {
 		//! solve the join order again, returning the final plan
 		return SolveJoinOrder();
 	}
+}
+
+void PlanEnumerator::SolveJoinOrderFixed(vector<LogicalOperator *> &exec_order) {
+	if (exec_order.empty()) {
+		return;
+	}
+
+	vector<reference<JoinRelationSet>> join_relations;
+	unordered_set<idx_t> included_relations;
+	for (auto op : exec_order) {
+		if (!op) {
+			continue;
+		}
+		auto table_indexes = op->GetTableIndex();
+		if (table_indexes.empty()) {
+			continue;
+		}
+		auto mapping = query_graph_manager.relation_manager.relation_mapping.find(table_indexes[0]);
+		if (mapping == query_graph_manager.relation_manager.relation_mapping.end()) {
+			continue;
+		}
+		if (included_relations.insert(mapping->second).second) {
+			join_relations.push_back(query_graph_manager.set_manager.GetJoinRelation(mapping->second));
+		}
+	}
+
+	// A fixed predicate-transfer order should normally contain every relation.
+	// Append any missing relations deterministically so reconstruction always
+	// receives a complete plan.
+	for (idx_t relation_idx = 0; relation_idx < query_graph_manager.relation_manager.NumRelations(); relation_idx++) {
+		if (included_relations.insert(relation_idx).second) {
+			join_relations.push_back(query_graph_manager.set_manager.GetJoinRelation(relation_idx));
+		}
+	}
+	if (join_relations.empty()) {
+		return;
+	}
+
+	auto current_set = &join_relations[0].get();
+	vector<idx_t> remaining;
+	for (idx_t i = 1; i < join_relations.size(); i++) {
+		remaining.push_back(i);
+	}
+
+	while (!remaining.empty()) {
+		idx_t selected = DConstants::INVALID_INDEX;
+		vector<reference<NeighborInfo>> selected_connections;
+		for (idx_t i = 0; i < remaining.size(); i++) {
+			auto &next_set = join_relations[remaining[i]].get();
+			auto connections = query_graph.GetConnections(*current_set, next_set);
+			if (!connections.empty()) {
+				selected = i;
+				selected_connections = std::move(connections);
+				break;
+			}
+		}
+
+		if (selected == DConstants::INVALID_INDEX) {
+			// Preserve the requested left-deep order even for disconnected
+			// components by adding the same explicit cross-product edge used by
+			// DuckDB's regular enumerator.
+			selected = 0;
+			auto &next_set = join_relations[remaining[selected]].get();
+			query_graph_manager.CreateQueryGraphCrossProduct(*current_set, next_set);
+			selected_connections = query_graph.GetConnections(*current_set, next_set);
+		}
+
+		auto &next_set = join_relations[remaining[selected]].get();
+		auto left_plan = plans.find(*current_set);
+		auto right_plan = plans.find(next_set);
+		if (left_plan == plans.end() || right_plan == plans.end() || selected_connections.empty()) {
+			throw InternalException("Failed to construct fixed Yan+ join order");
+		}
+		auto &new_set = query_graph_manager.set_manager.Union(*current_set, next_set);
+		plans[new_set] =
+		    CreateJoinTree(new_set, selected_connections, *left_plan->second, *right_plan->second);
+		current_set = &new_set;
+		remaining.erase_at(selected);
+	}
+}
+
+RelationalHypergraph PlanEnumerator::BuildRelationalHypergraph() {
+	RelationalHypergraph graph;
+	column_binding_map_t<column_binding_set_t> adjacency;
+
+	for (auto &filter_info : query_graph_manager.GetFilterBindings()) {
+		if (!filter_info->filter || filter_info->filter->GetExpressionType() != ExpressionType::COMPARE_EQUAL ||
+		    filter_info->filter->GetExpressionClass() != ExpressionClass::BOUND_COMPARISON) {
+			continue;
+		}
+		auto &comparison = filter_info->filter->Cast<BoundComparisonExpression>();
+		if (comparison.left->GetExpressionType() != ExpressionType::BOUND_COLUMN_REF ||
+		    comparison.right->GetExpressionType() != ExpressionType::BOUND_COLUMN_REF) {
+			continue;
+		}
+		auto left = filter_info->left_binding;
+		auto right = filter_info->right_binding;
+		if (left.table_index == DConstants::INVALID_INDEX || right.table_index == DConstants::INVALID_INDEX) {
+			continue;
+		}
+		adjacency[left].insert(left);
+		adjacency[left].insert(right);
+		adjacency[right].insert(left);
+		adjacency[right].insert(right);
+	}
+
+	column_binding_set_t visited;
+	idx_t next_vertex_id = 0;
+	for (auto &entry : adjacency) {
+		const auto &start = entry.first;
+		if (visited.find(start) != visited.end()) {
+			continue;
+		}
+
+		vector<ColumnBinding> pending;
+		pending.push_back(start);
+		visited.insert(start);
+		vector<ColumnBinding> component;
+		while (!pending.empty()) {
+			auto binding = pending.back();
+			pending.pop_back();
+			component.push_back(binding);
+			for (auto &neighbor : adjacency[binding]) {
+				if (visited.insert(neighbor).second) {
+					pending.push_back(neighbor);
+				}
+			}
+		}
+
+		for (auto &binding : component) {
+			graph.column_to_vertex[binding] = next_vertex_id;
+		}
+		next_vertex_id++;
+	}
+
+	for (idx_t relation_idx = 0; relation_idx < query_graph_manager.relation_manager.NumRelations(); relation_idx++) {
+		unordered_set<idx_t> vertices;
+		for (auto &entry : graph.column_to_vertex) {
+			if (entry.first.table_index == relation_idx) {
+				vertices.insert(entry.second);
+			}
+		}
+		if (!vertices.empty()) {
+			graph.relations.push_back(std::move(vertices));
+			graph.relation_indices.push_back(relation_idx);
+		}
+	}
+	return graph;
+}
+
+vector<idx_t> PlanEnumerator::GetEarWitnesses(RelationalHypergraph &graph, idx_t relation_idx) {
+	vector<idx_t> witnesses;
+	if (graph.relations.size() == 1) {
+		witnesses.push_back(relation_idx);
+		return witnesses;
+	}
+
+	const auto &relation = graph.relations[relation_idx];
+	unordered_set<idx_t> shared_attributes;
+	for (auto vertex : relation) {
+		for (idx_t other_idx = 0; other_idx < graph.relations.size(); other_idx++) {
+			if (other_idx != relation_idx && graph.relations[other_idx].find(vertex) != graph.relations[other_idx].end()) {
+				shared_attributes.insert(vertex);
+				break;
+			}
+		}
+	}
+	if (shared_attributes.empty()) {
+		return witnesses;
+	}
+
+	for (idx_t other_idx = 0; other_idx < graph.relations.size(); other_idx++) {
+		if (other_idx == relation_idx) {
+			continue;
+		}
+		const auto &candidate = graph.relations[other_idx];
+		bool contains_shared = true;
+		for (auto vertex : shared_attributes) {
+			if (candidate.find(vertex) == candidate.end()) {
+				contains_shared = false;
+				break;
+			}
+		}
+		if (contains_shared) {
+			witnesses.push_back(other_idx);
+		}
+	}
+	return witnesses;
+}
+
+PlanEnumerator::GYOResult PlanEnumerator::SolveJoinOrderGYO() {
+	GYOResult result;
+	auto graph = BuildRelationalHypergraph();
+	gyo_reduction_sequence.clear();
+
+	const auto total_relations = query_graph_manager.relation_manager.NumRelations();
+	if (graph.relations.size() != total_relations || total_relations == 0) {
+		return result;
+	}
+	if (total_relations == 1) {
+		InitLeafPlans();
+		result.applicable = true;
+		result.acyclic = true;
+		return result;
+	}
+
+	InitLeafPlans();
+	unordered_map<idx_t, JoinRelationSet *> relation_to_current_set;
+	for (idx_t relation_idx = 0; relation_idx < total_relations; relation_idx++) {
+		relation_to_current_set[relation_idx] = &query_graph_manager.set_manager.GetJoinRelation(relation_idx);
+	}
+
+	optional_ptr<JoinRelationSet> final_set;
+	while (graph.relations.size() > 1) {
+		struct EarCandidate {
+			idx_t ear_idx;
+			idx_t witness_idx;
+			double cost;
+			unique_ptr<DPJoinNode> join_node;
+			JoinRelationSet *union_set;
+		};
+		vector<EarCandidate> candidates;
+
+		for (idx_t ear_idx = 0; ear_idx < graph.relations.size(); ear_idx++) {
+			for (auto witness_idx : GetEarWitnesses(graph, ear_idx)) {
+				if (witness_idx == ear_idx) {
+					continue;
+				}
+				auto ear_relation_idx = graph.relation_indices[ear_idx];
+				auto witness_relation_idx = graph.relation_indices[witness_idx];
+				auto ear_set = relation_to_current_set[ear_relation_idx];
+				auto witness_set = relation_to_current_set[witness_relation_idx];
+				auto connections = query_graph.GetConnections(*ear_set, *witness_set);
+				if (connections.empty()) {
+					continue;
+				}
+				auto ear_plan = plans.find(*ear_set);
+				auto witness_plan = plans.find(*witness_set);
+				if (ear_plan == plans.end() || witness_plan == plans.end()) {
+					continue;
+				}
+				auto &union_set = query_graph_manager.set_manager.Union(*ear_set, *witness_set);
+				auto join_node = CreateJoinTree(union_set, connections, *ear_plan->second, *witness_plan->second);
+				candidates.push_back({ear_idx, witness_idx, join_node->cost, std::move(join_node), &union_set});
+			}
+		}
+
+		if (candidates.empty()) {
+			result.applicable = true;
+			result.cyclic_core = graph.relation_indices;
+			std::sort(result.cyclic_core.begin(), result.cyclic_core.end());
+			result.reduction_steps = gyo_reduction_sequence;
+			return result;
+		}
+
+		auto best = std::min_element(candidates.begin(), candidates.end(), [&](const EarCandidate &left,
+		                                                                       const EarCandidate &right) {
+			if (left.cost != right.cost) {
+				return left.cost < right.cost;
+			}
+			auto left_relation = graph.relation_indices[left.ear_idx];
+			auto right_relation = graph.relation_indices[right.ear_idx];
+			if (left_relation != right_relation) {
+				return left_relation < right_relation;
+			}
+			return graph.relation_indices[left.witness_idx] < graph.relation_indices[right.witness_idx];
+		});
+
+		auto ear_relation_idx = graph.relation_indices[best->ear_idx];
+		auto witness_relation_idx = graph.relation_indices[best->witness_idx];
+		gyo_reduction_sequence.push_back({ear_relation_idx, witness_relation_idx});
+		plans[*best->union_set] = std::move(best->join_node);
+
+		auto ear_set = relation_to_current_set[ear_relation_idx];
+		auto witness_set = relation_to_current_set[witness_relation_idx];
+		for (auto &entry : relation_to_current_set) {
+			if (entry.second == ear_set || entry.second == witness_set) {
+				entry.second = best->union_set;
+			}
+		}
+		if (best->union_set->count == total_relations) {
+			final_set = best->union_set;
+		}
+
+		graph.relations.erase_at(best->ear_idx);
+		graph.relation_indices.erase_at(best->ear_idx);
+	}
+
+	if (!final_set || plans.find(*final_set) == plans.end()) {
+		return result;
+	}
+	result.applicable = true;
+	result.acyclic = true;
+	result.reduction_steps = gyo_reduction_sequence;
+	return result;
+}
+
+static idx_t CoreRelationCount(const JoinRelationSet &set, const unordered_set<idx_t> &core) {
+	idx_t count = 0;
+	for (idx_t i = 0; i < set.count; i++) {
+		count += core.find(set.relations[i]) != core.end();
+	}
+	return count;
+}
+
+static void CopyRelationSet(const JoinRelationSet &set, vector<idx_t> &target) {
+	target.clear();
+	target.reserve(set.count);
+	for (idx_t i = 0; i < set.count; i++) {
+		target.push_back(set.relations[i]);
+	}
+}
+
+bool PlanEnumerator::FindPlanDerivedGHDBoundary(const vector<idx_t> &cyclic_core,
+	                                             VirtualBagBoundary &result) const {
+	if (cyclic_core.size() < 2) {
+		return false;
+	}
+	unordered_set<idx_t> core(cyclic_core.begin(), cyclic_core.end());
+	unordered_set<idx_t> all_relations;
+	for (idx_t relation_idx = 0; relation_idx < query_graph_manager.relation_manager.NumRelations(); relation_idx++) {
+		all_relations.insert(relation_idx);
+	}
+	auto &total_set = query_graph_manager.set_manager.GetJoinRelation(all_relations);
+	auto current = plans.find(total_set);
+	if (current == plans.end()) {
+		return false;
+	}
+
+	while (!current->second->is_leaf) {
+		auto &node = *current->second;
+		auto left_core_count = CoreRelationCount(node.left_set, core);
+		auto right_core_count = CoreRelationCount(node.right_set, core);
+		if (left_core_count > 0 && right_core_count > 0) {
+			CopyRelationSet(node.set, result.relations);
+			CopyRelationSet(node.left_set, result.left_relations);
+			CopyRelationSet(node.right_set, result.right_relations);
+			return true;
+		}
+
+		JoinRelationSet *next_set = nullptr;
+		if (left_core_count == cyclic_core.size()) {
+			next_set = &node.left_set;
+		} else if (right_core_count == cyclic_core.size()) {
+			next_set = &node.right_set;
+		} else {
+			return false;
+		}
+		current = plans.find(*next_set);
+		if (current == plans.end()) {
+			return false;
+		}
+	}
+	return false;
 }
 
 } // namespace duckdb

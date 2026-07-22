@@ -5,6 +5,7 @@
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/config.hpp"
 #include "duckdb/main/query_profiler.hpp"
+#include "duckdb/main/settings.hpp"
 #include "duckdb/optimizer/build_probe_side_optimizer.hpp"
 #include "duckdb/optimizer/column_lifetime_analyzer.hpp"
 #include "duckdb/optimizer/common_aggregate_optimizer.hpp"
@@ -20,6 +21,8 @@
 #include "duckdb/optimizer/join_elimination.hpp"
 #include "duckdb/optimizer/join_filter_pushdown_optimizer.hpp"
 #include "duckdb/optimizer/join_order/join_order_optimizer.hpp"
+#include "duckdb/optimizer/predicate_transfer/predicate_transfer_optimizer.hpp"
+#include "duckdb/optimizer/aggregation_pushdown.hpp"
 #include "duckdb/optimizer/limit_pushdown.hpp"
 #include "duckdb/optimizer/regex_range_filter.hpp"
 #include "duckdb/optimizer/remove_duplicate_groups.hpp"
@@ -41,9 +44,126 @@
 #include "duckdb/optimizer/window_self_join.hpp"
 #include "duckdb/optimizer/optimizer_extension.hpp"
 #include "duckdb/planner/binder.hpp"
+#include "duckdb/planner/expression/bound_aggregate_expression.hpp"
+#include "duckdb/planner/expression/bound_columnref_expression.hpp"
+#include "duckdb/planner/operator/logical_comparison_join.hpp"
 #include "duckdb/planner/planner.hpp"
 
 namespace duckdb {
+
+static bool HasSemiJoinFilterOperator(const LogicalOperator &op) {
+	if (op.type == LogicalOperatorType::LOGICAL_CREATE_BF || op.type == LogicalOperatorType::LOGICAL_USE_BF) {
+		return true;
+	}
+	for (auto &child : op.children) {
+		if (HasSemiJoinFilterOperator(*child)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static bool ContainsLogicalOperator(const LogicalOperator &op, LogicalOperatorType type) {
+	if (op.type == type) {
+		return true;
+	}
+	for (auto &child : op.children) {
+		if (ContainsLogicalOperator(*child, type)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+struct YanplusPlanShape {
+	idx_t join_count = 0;
+	idx_t aggregate_count = 0;
+	idx_t projection_count = 0;
+};
+
+static bool IsDirectEquality(const JoinCondition &condition) {
+	return condition.comparison == ExpressionType::COMPARE_EQUAL &&
+	       condition.left->type == ExpressionType::BOUND_COLUMN_REF &&
+	       condition.right->type == ExpressionType::BOUND_COLUMN_REF;
+}
+
+static bool InspectYanplusPlanShape(const LogicalOperator &op, YanplusPlanShape &shape) {
+	switch (op.type) {
+	case LogicalOperatorType::LOGICAL_GET:
+		return op.children.empty();
+	case LogicalOperatorType::LOGICAL_FILTER:
+		if (op.children.size() != 1) {
+			return false;
+		}
+		return InspectYanplusPlanShape(*op.children[0], shape);
+	case LogicalOperatorType::LOGICAL_PROJECTION:
+		if (op.children.size() != 1) {
+			return false;
+		}
+		shape.projection_count++;
+		return InspectYanplusPlanShape(*op.children[0], shape);
+	case LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY: {
+		if (op.children.size() != 1 || ++shape.aggregate_count > 1) {
+			return false;
+		}
+		auto &aggregate = op.Cast<LogicalAggregate>();
+		// The current Yan+ aggregate rewrite represents one global aggregate.
+		// Grouped/GROUPING SETS plans retain DuckDB's native v1.5 path.
+		if (!aggregate.groups.empty() || !aggregate.grouping_sets.empty() ||
+		    !aggregate.grouping_functions.empty()) {
+			return false;
+		}
+		for (auto &expression : aggregate.expressions) {
+			if (expression->GetExpressionClass() != ExpressionClass::BOUND_AGGREGATE) {
+				return false;
+			}
+			auto &bound_aggregate = expression->Cast<BoundAggregateExpression>();
+			if (bound_aggregate.IsDistinct() || bound_aggregate.filter || bound_aggregate.order_bys) {
+				return false;
+			}
+		}
+		return InspectYanplusPlanShape(*op.children[0], shape);
+	}
+	case LogicalOperatorType::LOGICAL_COMPARISON_JOIN: {
+		if (op.children.size() != 2) {
+			return false;
+		}
+		auto &join = op.Cast<LogicalComparisonJoin>();
+		if (join.join_type != JoinType::INNER || !join.expressions.empty()) {
+			return false;
+		}
+		for (auto &condition : join.conditions) {
+			// GYO and semi-join key extraction require one binding per side.
+			// Keep complex equality operands on DuckDB's native optimizer path;
+			// non-equality residual predicates remain valid final checks.
+			if (condition.comparison == ExpressionType::COMPARE_EQUAL && !IsDirectEquality(condition)) {
+				return false;
+			}
+		}
+		if (std::none_of(join.conditions.begin(), join.conditions.end(), IsDirectEquality)) {
+			return false;
+		}
+		shape.join_count++;
+		return InspectYanplusPlanShape(*op.children[0], shape) &&
+		       InspectYanplusPlanShape(*op.children[1], shape);
+	}
+	default:
+		// Cross products, windows, set operations, CTEs, delim/outer joins,
+		// samples and mutation operators retain DuckDB's native optimizer path.
+		return false;
+	}
+}
+
+static LogicalOperator *GetYanplusQueryBody(LogicalOperator *op) {
+	while (op && (op->type == LogicalOperatorType::LOGICAL_EXPLAIN ||
+	              op->type == LogicalOperatorType::LOGICAL_COPY_TO_FILE)) {
+		if (op->children.size() != 1) {
+			return nullptr;
+		}
+		op = op->children[0].get();
+	}
+	return op;
+}
 
 Optimizer::Optimizer(Binder &binder, ClientContext &context) : context(context), binder(binder), rewriter(context) {
 	rewriter.rules.push_back(make_uniq<ConstantOrderNormalizationRule>(rewriter));
@@ -192,18 +312,130 @@ void Optimizer::RunBuiltInOptimizers() {
 		plan = empty_result_pullup.Optimize(std::move(plan));
 	});
 
+	// Remember the pre-rewrite shape: a supported-looking self-join produced
+	// from a window is still outside the Yan+ relation model.
+	auto yanplus_had_window = ContainsLogicalOperator(*plan, LogicalOperatorType::LOGICAL_WINDOW);
+
 	// Replaces some window computations with self-joins
 	RunOptimizer(OptimizerType::WINDOW_SELF_JOIN, [&]() {
 		WindowSelfJoinOptimizer window_self_join_optimizer(*this);
 		plan = window_self_join_optimizer.Optimize(std::move(plan));
 	});
 
-	// then we perform the join ordering optimization
-	// this also rewrites cross products + filters into joins and performs filter pushdowns
+	// Then perform join ordering. Yan+ uses GYO for acyclic queries and a
+	// plan-derived two-bag GHD boundary for cyclic queries. Unsupported query
+	// shapes keep DuckDB's native v1.5 optimizer path.
+	auto query_type = DetectQueryType(plan.get());
+	auto yanplus_enabled = Settings::Get<YanplusEnableSetting>(context) && !yanplus_had_window &&
+	                       IsYanplusEligible(plan.get(), query_type);
+	bool yanplus_cyclic_query = false;
 	RunOptimizer(OptimizerType::JOIN_ORDER, [&]() {
-		JoinOrderOptimizer optimizer(context);
-		plan = optimizer.Optimize(std::move(plan));
+		if (yanplus_enabled) {
+			JoinOrderOptimizer optimizer(context, true);
+			vector<LogicalOperator *> empty_filter_order;
+			plan = optimizer.CallSolveJoinOrderFixed(std::move(plan), empty_filter_order);
+			yanplus_cyclic_query = optimizer.DetectedCyclicQuery();
+		} else {
+			JoinOrderOptimizer optimizer(context);
+			plan = optimizer.Optimize(std::move(plan));
+		}
 	});
+
+	if (yanplus_enabled) {
+		// Predicate transfer and aggregate pushdown operate below EXPLAIN/COPY.
+		// Move the child out temporarily so the outer operator itself remains the
+		// exact v1.5 operator produced by the binder.
+		unique_ptr<LogicalOperator> outer_operator;
+		if ((plan->type == LogicalOperatorType::LOGICAL_EXPLAIN ||
+		     plan->type == LogicalOperatorType::LOGICAL_COPY_TO_FILE) &&
+		    plan->children.size() == 1) {
+			outer_operator = std::move(plan);
+			plan = std::move(outer_operator->children[0]);
+		}
+
+		if (query_type == QueryType::SELECT_STAR) {
+			// A cyclic plan already contains the single directed bag separator.
+			// Running the base-table transfer pass afterwards would flatten/reorder
+			// that native DP topology, so only use it for the acyclic GYO path.
+			if (!yanplus_cyclic_query && !HasSemiJoinFilterOperator(*plan)) {
+				PredicateTransferOptimizer predicate_transfer(context);
+				plan = predicate_transfer.PreOptimize(std::move(plan));
+				auto filter_order = predicate_transfer.GetBFOrder();
+				RunOptimizer(OptimizerType::JOIN_ORDER, [&]() {
+					JoinOrderOptimizer fixed_order_optimizer(context, true);
+					plan = fixed_order_optimizer.CallSolveJoinOrderFixed(std::move(plan), filter_order);
+				});
+				plan = predicate_transfer.Optimize(std::move(plan));
+			}
+		} else if (!yanplus_cyclic_query &&
+		           (query_type == QueryType::COUNT_STAR || query_type == QueryType::MINMAX_AGGREGATE ||
+		            query_type == QueryType::SUM || query_type == QueryType::SELECT_DISTINCT)) {
+			// This rewrite deliberately remains acyclic-only. A plan-derived cyclic
+			// bag is a semi-join insertion boundary, so its aggregate stays above
+			// the otherwise unchanged native v1.5 join tree.
+			// Keep all analysis and rewrite state query-local. Reusing one object is
+			// also required because the analysis copy records which join branches
+			// should receive partial aggregates before the real plan is rewritten.
+			AggregationPushdown aggregation_pushdown(binder, context, query_type);
+			auto analysis_plan = plan->Copy(context);
+			RunOptimizer(OptimizerType::AGGREGATION_PUSHDOWN, [&]() {
+				analysis_plan = aggregation_pushdown.Rewrite(std::move(analysis_plan));
+			});
+
+			auto max_height = DetermineMaxHeight(analysis_plan.get());
+			if (query_type != QueryType::SELECT_DISTINCT) {
+				for (int height = 0; height < max_height; height++) {
+					RunOptimizer(OptimizerType::UNUSED_COLUMNS, [&]() {
+						RemoveUnusedColumns unused(binder, context, true, true);
+						unused.VisitOperator(*analysis_plan);
+					});
+					RunOptimizer(OptimizerType::AGGREGATION_PUSHDOWN, [&]() {
+						analysis_plan = aggregation_pushdown.UpdateBinding(std::move(analysis_plan));
+					});
+				}
+			} else {
+				RunOptimizer(OptimizerType::UNUSED_COLUMNS, [&]() {
+					RemoveUnusedColumns unused(binder, context, true, true);
+					unused.VisitOperator(*analysis_plan);
+				});
+			}
+			RunOptimizer(OptimizerType::UNUSED_COLUMNS, [&]() {
+				RemoveUnusedColumns unused(binder, context, true);
+				unused.VisitOperatorBottomUp(*analysis_plan);
+			});
+
+			RunOptimizer(OptimizerType::AGGREGATION_PUSHDOWN, [&]() {
+				aggregation_pushdown.RecordAggPushdown(analysis_plan);
+				plan = aggregation_pushdown.ApplyAgg(std::move(plan));
+			});
+
+			if (query_type != QueryType::SELECT_DISTINCT) {
+				for (int height = 0; height < max_height; height++) {
+					RunOptimizer(OptimizerType::UNUSED_COLUMNS, [&]() {
+						RemoveUnusedColumns unused(binder, context, true, true);
+						unused.VisitOperator(*plan);
+					});
+					RunOptimizer(OptimizerType::AGGREGATION_PUSHDOWN, [&]() {
+						plan = aggregation_pushdown.UpdateBinding(std::move(plan));
+					});
+				}
+			} else {
+				RunOptimizer(OptimizerType::UNUSED_COLUMNS, [&]() {
+					RemoveUnusedColumns unused(binder, context, true, true);
+					unused.VisitOperator(*plan);
+				});
+			}
+			RunOptimizer(OptimizerType::UNUSED_COLUMNS, [&]() {
+				RemoveUnusedColumns unused(binder, context, true);
+				unused.VisitOperatorBottomUp(*plan);
+			});
+		}
+
+		if (outer_operator) {
+			outer_operator->children[0] = std::move(plan);
+			plan = std::move(outer_operator);
+		}
+	}
 
 	RunOptimizer(OptimizerType::JOIN_ELIMINATION, [&]() {
 		JoinElimination join_elimination;
@@ -349,6 +581,116 @@ unique_ptr<LogicalOperator> Optimizer::Optimize(unique_ptr<LogicalOperator> plan
 	Planner::VerifyPlan(context, plan);
 
 	return std::move(plan);
+}
+
+bool Optimizer::HasJoins(LogicalOperator *op) {
+	if (!op) {
+		return false;
+	}
+	switch (op->type) {
+	case LogicalOperatorType::LOGICAL_COMPARISON_JOIN:
+	case LogicalOperatorType::LOGICAL_ASOF_JOIN:
+	case LogicalOperatorType::LOGICAL_DELIM_JOIN:
+	case LogicalOperatorType::LOGICAL_ANY_JOIN:
+	case LogicalOperatorType::LOGICAL_CROSS_PRODUCT:
+		return true;
+	default:
+		break;
+	}
+	for (auto &child : op->children) {
+		if (HasJoins(child.get())) {
+			return true;
+		}
+	}
+	return false;
+}
+
+QueryType Optimizer::DetectQueryType(LogicalOperator *op) {
+	op = GetYanplusQueryBody(op);
+	if (!op || !HasJoins(op)) {
+		return QueryType::OTHER;
+	}
+
+	if (op->type == LogicalOperatorType::LOGICAL_DISTINCT && op->children.size() == 1 &&
+	    op->children[0]->type == LogicalOperatorType::LOGICAL_PROJECTION) {
+		return QueryType::SELECT_DISTINCT;
+	}
+
+	if (op->type != LogicalOperatorType::LOGICAL_PROJECTION || op->children.size() != 1) {
+		return QueryType::OTHER;
+	}
+	if (op->children[0]->type != LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY) {
+		return QueryType::SELECT_STAR;
+	}
+
+	auto &aggregate = op->children[0]->Cast<LogicalAggregate>();
+	optional_idx category;
+	for (auto &expression : aggregate.expressions) {
+		if (expression->GetExpressionClass() != ExpressionClass::BOUND_AGGREGATE) {
+			return QueryType::OTHER;
+		}
+		auto &bound_aggregate = expression->Cast<BoundAggregateExpression>();
+		QueryType expression_type;
+		if (bound_aggregate.function.name == "count_star" || bound_aggregate.function.name == "count") {
+			expression_type = aggregate.groups.empty() ? QueryType::COUNT_STAR : QueryType::SUM;
+		} else if (bound_aggregate.function.name == "min" || bound_aggregate.function.name == "max") {
+			expression_type = QueryType::MINMAX_AGGREGATE;
+		} else if (bound_aggregate.function.name == "sum") {
+			expression_type = QueryType::SUM;
+		} else {
+			return QueryType::OTHER;
+		}
+		auto encoded = static_cast<idx_t>(expression_type);
+		if (category.IsValid() && category.GetIndex() != encoded) {
+			// The current aggregate pushdown implementation intentionally handles
+			// one aggregate family at a time. Mixed families fall back safely.
+			return QueryType::OTHER;
+		}
+		category = optional_idx(encoded);
+	}
+	return category.IsValid() ? static_cast<QueryType>(category.GetIndex()) : QueryType::OTHER;
+}
+
+bool Optimizer::IsYanplusEligible(LogicalOperator *op, QueryType query_type) {
+	if (query_type == QueryType::OTHER || query_type == QueryType::SELECT_DISTINCT) {
+		return false;
+	}
+	op = GetYanplusQueryBody(op);
+	if (!op || op->type != LogicalOperatorType::LOGICAL_PROJECTION || op->children.size() != 1) {
+		return false;
+	}
+
+	auto aggregate_query = query_type == QueryType::COUNT_STAR || query_type == QueryType::MINMAX_AGGREGATE ||
+	                       query_type == QueryType::SUM;
+	if (aggregate_query !=
+	    (op->children[0]->type == LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY)) {
+		return false;
+	}
+	if (aggregate_query && op->children[0]->Cast<LogicalAggregate>().expressions.size() != 1) {
+		return false;
+	}
+
+	YanplusPlanShape shape;
+	if (!InspectYanplusPlanShape(*op, shape) || shape.join_count == 0 || shape.projection_count != 1) {
+		return false;
+	}
+	return aggregate_query ? shape.aggregate_count == 1 : shape.aggregate_count == 0;
+}
+
+int Optimizer::DetermineMaxHeight(LogicalOperator *op) {
+	if (!op) {
+		return 0;
+	}
+	int child_height = 0;
+	for (auto &child : op->children) {
+		child_height = std::max(child_height, DetermineMaxHeight(child.get()));
+	}
+	bool is_join = op->type == LogicalOperatorType::LOGICAL_COMPARISON_JOIN ||
+	               op->type == LogicalOperatorType::LOGICAL_ASOF_JOIN ||
+	               op->type == LogicalOperatorType::LOGICAL_DELIM_JOIN ||
+	               op->type == LogicalOperatorType::LOGICAL_ANY_JOIN ||
+	               op->type == LogicalOperatorType::LOGICAL_CROSS_PRODUCT;
+	return child_height + (is_join ? 1 : 0);
 }
 
 unique_ptr<Expression> Optimizer::BindScalarFunction(const string &name, unique_ptr<Expression> c1) {

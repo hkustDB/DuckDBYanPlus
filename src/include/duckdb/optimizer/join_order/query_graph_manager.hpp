@@ -37,6 +37,28 @@ struct GenerateJoinRelation {
 	unique_ptr<LogicalOperator> op;
 };
 
+//! A virtual GHD bag boundary derived from DuckDB's chosen binary join plan.
+//! The relation identifiers refer to RelationManager entries. This is optimizer
+//! metadata only: reconstruction keeps the original join node and merely wraps
+//! its two existing children in the predicate-transfer operators.
+struct VirtualBagBoundary {
+	vector<idx_t> relations;
+	vector<idx_t> left_relations;
+	vector<idx_t> right_relations;
+
+	bool Matches(const JoinRelationSet &set) const {
+		if (relations.size() != set.count) {
+			return false;
+		}
+		for (idx_t i = 0; i < set.count; i++) {
+			if (relations[i] != set.relations[i]) {
+				return false;
+			}
+		}
+		return true;
+	}
+};
+
 //! Filter info struct that is used by the cardinality estimator to set the initial cardinality
 //! but is also eventually transformed into a query edge.
 class FilterInfo {
@@ -82,6 +104,13 @@ public:
 	//! Reconstruct the logical plan using the plan found by the plan enumerator
 	unique_ptr<LogicalOperator> Reconstruct(unique_ptr<LogicalOperator> plan);
 
+	//! Configure a single plan-derived GHD boundary. The boundary is consumed
+	//! while reconstructing the native DuckDB join tree.
+	void SetVirtualBagBoundary(VirtualBagBoundary boundary);
+	bool InsertedVirtualBagFilter() const {
+		return inserted_virtual_bag_filter;
+	}
+
 	//! Get a reference to the QueryGraphEdges structure that stores edges between
 	//! nodes and hypernodes.
 	const QueryGraphEdges &GetQueryGraphEdges() const;
@@ -105,10 +134,13 @@ private:
 	vector<unique_ptr<FilterInfo>> filters_and_bindings;
 
 	QueryGraphEdges query_graph;
+	unique_ptr<VirtualBagBoundary> virtual_bag_boundary;
+	bool inserted_virtual_bag_filter = false;
 
 	void GetColumnBinding(Expression &expression, ColumnBinding &binding);
 
 	void CreateHyperGraphEdges();
+	void InsertVirtualBagFilter(JoinRelationSet &set, unique_ptr<LogicalOperator> &op);
 
 	GenerateJoinRelation GenerateJoins(vector<unique_ptr<LogicalOperator>> &extracted_relations, JoinRelationSet &set);
 };

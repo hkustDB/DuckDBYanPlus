@@ -16,13 +16,14 @@ public:
 	static constexpr const PhysicalOperatorType TYPE = PhysicalOperatorType::USE_BF;
 
 public:
-	PhysicalUseBF(vector<LogicalType> types, const shared_ptr<FilterPlan> &filter_plan, unique_ptr<BloomFilterUsage> bf,
-	              PhysicalCreateBF *related_create_bfs, idx_t estimated_cardinality);
+	PhysicalUseBF(PhysicalPlan &physical_plan, vector<LogicalType> types, const shared_ptr<FilterPlan> &filter_plan,
+	              shared_ptr<SemiJoinFilterUsage> filter, PhysicalCreateBF *related_create_bfs,
+	              idx_t estimated_cardinality);
 
 	shared_ptr<FilterPlan> filter_plan;
 	PhysicalCreateBF *related_creator = nullptr;
 
-	shared_ptr<BloomFilterUsage> bf_to_use;
+	shared_ptr<SemiJoinFilterUsage> filter_to_use;
 
 public:
 	// Operator interface

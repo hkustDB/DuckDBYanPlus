@@ -1,0 +1,69 @@
+# name: test/sql/optimizer/plan/test_yanplus_semijoin_filter_modes.test
+# description: Bloom and exact Hash Yan+ semi-join filters return identical cyclic-query results
+# group: [plan]
+
+statement ok
+SET threads = 1
+
+statement ok
+CREATE TABLE mode_r(a INTEGER, b VARCHAR)
+
+statement ok
+CREATE TABLE mode_s(b VARCHAR, c INTEGER)
+
+statement ok
+CREATE TABLE mode_t(c INTEGER, a INTEGER)
+
+statement ok
+INSERT INTO mode_r VALUES (1, 'x'), (1, 'x'), (2, 'y'), (3, 'z'), (NULL, 'n'), (4, NULL)
+
+statement ok
+INSERT INTO mode_s VALUES ('x', 10), ('y', 20), ('z', 30), ('n', 40), (NULL, 50)
+
+statement ok
+INSERT INTO mode_t VALUES (10, 1), (20, 2), (30, 9), (40, NULL), (50, 4)
+
+# Bloom is the default backend.
+query III rowsort
+SELECT r.a, r.b, s.c
+FROM mode_r r
+JOIN mode_s s ON r.b = s.b
+JOIN mode_t t ON s.c = t.c AND r.a = t.a
+----
+1	x	10
+1	x	10
+2	y	20
+
+statement ok
+SET yanplus_semijoin_filter = 'hash'
+
+# Exact Hash uses the same composite separator, including VARCHAR, duplicate,
+# and SQL NULL handling.
+query III rowsort
+SELECT r.a, r.b, s.c
+FROM mode_r r
+JOIN mode_s s ON r.b = s.b
+JOIN mode_t t ON s.c = t.c AND r.a = t.a
+----
+1	x	10
+1	x	10
+2	y	20
+
+query II
+EXPLAIN SELECT r.a, r.b, s.c
+FROM mode_r r
+JOIN mode_s s ON r.b = s.b
+JOIN mode_t t ON s.c = t.c AND r.a = t.a
+----
+physical_plan	<REGEX>:.*Semi-Join Filter Type:.*HASH.*
+
+statement ok
+SET yanplus_semijoin_filter = 'bloom'
+
+query II
+EXPLAIN SELECT r.a, r.b, s.c
+FROM mode_r r
+JOIN mode_s s ON r.b = s.b
+JOIN mode_t t ON s.c = t.c AND r.a = t.a
+----
+physical_plan	<REGEX>:.*Semi-Join Filter Type:.*BLOOM.*

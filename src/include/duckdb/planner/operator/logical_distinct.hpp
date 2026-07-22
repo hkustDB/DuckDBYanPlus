@@ -33,7 +33,7 @@ public:
 	InsertionOrderPreservingMap<string> ParamsToString() const override;
 
 	vector<ColumnBinding> GetColumnBindings() override {
-    	return children[0]->GetColumnBindings();
+		return children[0]->GetColumnBindings();
 	}
 
 	void Serialize(Serializer &serializer) const override;

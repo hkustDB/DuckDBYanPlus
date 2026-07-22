@@ -36,37 +36,6 @@ InsertionOrderPreservingMap<string> LogicalGet::ParamsToString() const {
 
 	string filters_info;
 	bool first_item = true;
-
-	string projection;
-
-	// Add projection columns (similar to PhysicalTableScan)
-    if (function.projection_pushdown) {
-        if (function.filter_prune && !projection_ids.empty()) {
-            // Use projection_ids when available (filtered projections)
-            for (idx_t i = 0; i < projection_ids.size(); i++) {
-                const auto &column_id = column_ids[projection_ids[i]].GetPrimaryIndex();
-                if (column_id < names.size()) {
-                    if (i > 0) {
-                        projection += "\n";
-                    }
-                    projection += names[column_id];
-                }
-            }
-        } else {
-            // Use column_ids directly
-            for (idx_t i = 0; i < column_ids.size(); i++) {
-                const auto &column_id = column_ids[i].GetPrimaryIndex();
-                if (column_id < names.size()) {
-                    if (i > 0) {
-                        projection += "\n";
-                    }
-                    projection += names[column_id];
-                }
-            }
-        }
-    }
-	result["Projection"] = projection;
-
 	for (auto &kv : table_filters.filters) {
 		auto &column_index = kv.first;
 		auto &filter = kv.second;

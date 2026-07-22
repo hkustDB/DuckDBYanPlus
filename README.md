@@ -1,10 +1,49 @@
 ## Yannakakis<sup>+</sup>
 
-This repository contains the implementation of **Yannakakis<sup>+</sup>**, built on top of [DuckDB v1.3.0](https://github.com/duckdb/duckdb/tree/v1.3-ossivalis). It provides a customized version of DuckDB. Compared to the original Yannakakis<sup>+</sup>, this version introduces the following key improvements:
+This repository contains the implementation of **Yannakakis<sup>+</sup>**, ported to
+[DuckDB v1.5.0](https://github.com/duckdb/duckdb/tree/v1.5.0). It provides a customized
+version of DuckDB with:
 
-- Replace semi-join in original Yannakakis algorithm with **Bloom Filter**. 
-- Apply **aggregation push-down** in the query plan. 
-- Use **GYO** algorithm when query is acyclic and fallback to the original DuckDB plan only when the query is cyclic. 
+- GYO-based join planning for acyclic queries.
+- Bloom-filter and exact hash-filter backends for Yan+ semi-joins. Bloom is the default.
+- Aggregation push-down in the query plan.
+- Experimental, plan-derived virtual bags that let Yan+ insert semi-join filters for cyclic queries.
+
+### Cyclic-query scope
+
+When GYO detects a cyclic core, DuckDB's v1.5 dynamic-programming enumerator still
+selects the binary join plan. Yan+ derives one virtual bag boundary from that selected
+plan and treats its existing left and right subtrees as the probe and build bags for
+semi-join-filter insertion.
+
+The virtual bag is optimizer metadata, not a new bag or SCOJ operator. The selected
+join topology, join conditions, and residual predicates remain unchanged. Existing
+`CREATE_BF` and `USE_BF` wrappers build and apply the filter around the complete
+subtrees, after which the original DuckDB join still executes. This is intended to
+provide experimental cyclic-query coverage; it does not enumerate all GHD
+decompositions or implement a complete GHD/SCOJ execution strategy. Aggregate
+pushdown remains acyclic-only: for a cyclic aggregate query, the native DuckDB
+aggregate stays above the filter-wrapped join tree.
+
+### Configuration
+
+The Yan+ settings are local DuckDB settings:
+
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| `yanplus_enable` | `true` | Enable or disable the Yan+ optimizer. |
+| `yanplus_cyclic_bags` | `true` | Enable plan-derived virtual bags for cyclic queries. |
+| `yanplus_semijoin_filter` | `BLOOM` | Select `BLOOM` or exact `HASH` semi-join filters. |
+
+For example, the same query can be compared with the two filter backends using:
+
+```sql
+SET yanplus_semijoin_filter = 'bloom'; -- default
+-- run the query
+
+SET yanplus_semijoin_filter = 'hash';
+-- run the same query
+```
 
 ## Build
 
@@ -20,7 +59,7 @@ BUILD_BENCHMARK=1 make # Build with benchmark support
 
 ## Baselines
 
-- **DuckDB v1.3.0**: [https://github.com/duckdb/duckdb/tree/v1.3-ossivalis](https://github.com/duckdb/duckdb/tree/v1.3-ossivalis)
+- **DuckDB v1.5.0**: [https://github.com/duckdb/duckdb/tree/v1.5.0](https://github.com/duckdb/duckdb/tree/v1.5.0)
 - **RPT (Robust Predicate Transfer)**: [https://github.com/embryo-labs/Robust-Predicate-Transfer](https://github.com/embryo-labs/Robust-Predicate-Transfer)
 
 - **Parachute**: https://github.com/utndatasystems/parachute
@@ -28,6 +67,10 @@ BUILD_BENCHMARK=1 make # Build with benchmark support
 - **Yannakakis<sup>+</sup> (rewrite)**: https://github.com/hkustDB/Quorion
 
 ## Benchmark
+
+The reproducible Bloom-versus-Hash experiment is documented in
+[`benchmark/yanplus/README.md`](benchmark/yanplus/README.md). It runs the same cyclic
+query and plan with only the semi-join-filter backend changed.
 
 - Sub-Graph Pattern Benchmark (SGPB) 
 

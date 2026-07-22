@@ -3,6 +3,7 @@
 #include "duckdb/catalog/catalog_entry/scalar_function_catalog_entry.hpp"
 #include "duckdb/common/types/column/column_data_collection.hpp"
 #include "duckdb/execution/column_binding_resolver.hpp"
+#include "duckdb/execution/transfer_bf_linker.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/config.hpp"
 #include "duckdb/main/query_profiler.hpp"
@@ -28,6 +29,12 @@ unique_ptr<PhysicalPlan> PhysicalPlanGenerator::Plan(unique_ptr<LogicalOperator>
 
 PhysicalOperator &PhysicalPlanGenerator::ResolveAndPlan(unique_ptr<LogicalOperator> op) {
 	auto &profiler = QueryProfiler::Get(context);
+
+	// Reconnect CREATE_BF and USE_BF operators after plan copies/serialization.
+	// The linker can compact and remove logical operators, so it must run before
+	// resolving types and column bindings for the final physical plan.
+	TransferBFLinker linker;
+	linker.LinkBFOperators(*op);
 
 	// Resolve the types of each operator.
 	profiler.StartPhase(MetricType::PHYSICAL_PLANNER_RESOLVE_TYPES);
@@ -172,6 +179,10 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalOperator &op) {
 		return CreatePlan(op.Cast<LogicalCopyDatabase>());
 	case LogicalOperatorType::LOGICAL_UPDATE_EXTENSIONS:
 		return CreatePlan(op.Cast<LogicalSimple>());
+	case LogicalOperatorType::LOGICAL_CREATE_BF:
+		return CreatePlan(op.Cast<LogicalCreateBF>());
+	case LogicalOperatorType::LOGICAL_USE_BF:
+		return CreatePlan(op.Cast<LogicalUseBF>());
 	case LogicalOperatorType::LOGICAL_EXTENSION_OPERATOR: {
 		auto &extension_op = op.Cast<LogicalExtensionOperator>();
 		return extension_op.CreatePlan(context, *this);

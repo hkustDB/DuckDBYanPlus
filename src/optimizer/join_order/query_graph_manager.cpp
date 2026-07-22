@@ -40,6 +40,11 @@ bool QueryGraphManager::Build(JoinOrderOptimizer &optimizer, LogicalOperator &op
 	return true;
 }
 
+void QueryGraphManager::SetVirtualBagBoundary(VirtualBagBoundary boundary) {
+	virtual_bag_boundary = make_uniq<VirtualBagBoundary>(std::move(boundary));
+	inserted_virtual_bag_filter = false;
+}
+
 void QueryGraphManager::GetColumnBinding(Expression &root_expr, ColumnBinding &binding) {
 	ExpressionIterator::VisitExpression<BoundColumnRefExpression>(
 	    root_expr, [&](const BoundColumnRefExpression &colref) {
@@ -399,8 +404,91 @@ GenerateJoinRelation QueryGraphManager::GenerateJoins(vector<unique_ptr<LogicalO
 			}
 		}
 	}
+	InsertVirtualBagFilter(set, result_operator);
 	auto result = GenerateJoinRelation(result_relation, std::move(result_operator));
 	return result;
+}
+
+static bool ContainsBinding(const vector<ColumnBinding> &bindings, const ColumnBinding &binding) {
+	return std::find(bindings.begin(), bindings.end(), binding) != bindings.end();
+}
+
+void QueryGraphManager::InsertVirtualBagFilter(JoinRelationSet &set, unique_ptr<LogicalOperator> &op) {
+	if (!virtual_bag_boundary || inserted_virtual_bag_filter || !virtual_bag_boundary->Matches(set)) {
+		return;
+	}
+
+	auto join_root = op.get();
+	if (join_root->type == LogicalOperatorType::LOGICAL_FILTER && join_root->children.size() == 1) {
+		join_root = join_root->children[0].get();
+	}
+	if (join_root->type != LogicalOperatorType::LOGICAL_COMPARISON_JOIN) {
+		return;
+	}
+	auto &join = join_root->Cast<LogicalComparisonJoin>();
+	if (join.join_type != JoinType::INNER || join.children.size() != 2) {
+		return;
+	}
+
+	const auto left_bindings = join.children[0]->GetColumnBindings();
+	const auto right_bindings = join.children[1]->GetColumnBindings();
+	auto filter_plan = make_shared_ptr<FilterPlan>();
+	for (auto &condition : join.conditions) {
+		if (condition.comparison != ExpressionType::COMPARE_EQUAL ||
+		    condition.left->GetExpressionType() != ExpressionType::BOUND_COLUMN_REF ||
+		    condition.right->GetExpressionType() != ExpressionType::BOUND_COLUMN_REF) {
+			continue;
+		}
+
+		auto &left_ref = condition.left->Cast<BoundColumnRefExpression>();
+		auto &right_ref = condition.right->Cast<BoundColumnRefExpression>();
+		ColumnBinding apply_binding;
+		ColumnBinding build_binding;
+		LogicalType return_type;
+		if (ContainsBinding(left_bindings, left_ref.binding) && ContainsBinding(right_bindings, right_ref.binding)) {
+			apply_binding = left_ref.binding;
+			build_binding = right_ref.binding;
+			return_type = right_ref.return_type;
+		} else if (ContainsBinding(left_bindings, right_ref.binding) &&
+		           ContainsBinding(right_bindings, left_ref.binding)) {
+			apply_binding = right_ref.binding;
+			build_binding = left_ref.binding;
+			return_type = left_ref.return_type;
+		} else {
+			continue;
+		}
+
+		bool duplicate = false;
+		for (idx_t i = 0; i < filter_plan->build.size(); i++) {
+			if (filter_plan->build[i] == build_binding && filter_plan->apply[i] == apply_binding) {
+				duplicate = true;
+				break;
+			}
+		}
+		if (!duplicate) {
+			filter_plan->build.push_back(build_binding);
+			filter_plan->apply.push_back(apply_binding);
+			filter_plan->return_types.push_back(std::move(return_type));
+		}
+	}
+	if (filter_plan->build.empty()) {
+		return;
+	}
+
+	// DuckDB's selected binary join remains unchanged. Its right child is the
+	// build bag and its left child is the probe bag. The existing CREATE_BF
+	// operator materializes/replays the complete right subtree and USE_BF only
+	// filters the complete left subtree before the original join conditions run.
+	auto create_filter = make_uniq<LogicalCreateBF>(vector<shared_ptr<FilterPlan>> {filter_plan});
+	create_filter->SetEstimatedCardinality(join.children[1]->estimated_cardinality);
+	create_filter->AddChild(std::move(join.children[1]));
+	join.children[1] = std::move(create_filter);
+
+	auto use_filter = make_uniq<LogicalUseBF>(filter_plan);
+	use_filter->SetEstimatedCardinality(join.children[0]->estimated_cardinality);
+	use_filter->AddChild(std::move(join.children[0]));
+	join.children[0] = std::move(use_filter);
+	inserted_virtual_bag_filter = true;
 }
 
 const QueryGraphEdges &QueryGraphManager::GetQueryGraphEdges() const {

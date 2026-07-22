@@ -11,12 +11,12 @@
 
 namespace duckdb {
 
-JoinOrderOptimizer::JoinOrderOptimizer(ClientContext &context)
-    : context(context), query_graph_manager(context), depth(1) {
+JoinOrderOptimizer::JoinOrderOptimizer(ClientContext &context, bool GYO)
+    : context(context), query_graph_manager(context), GYO(GYO), depth(1) {
 }
 
 JoinOrderOptimizer JoinOrderOptimizer::CreateChildOptimizer() {
-	JoinOrderOptimizer child_optimizer(context);
+	JoinOrderOptimizer child_optimizer(context, GYO);
 	child_optimizer.materialized_cte_stats = materialized_cte_stats;
 	child_optimizer.delim_scan_stats = delim_scan_stats;
 	child_optimizer.depth = depth + 1;
@@ -107,6 +107,69 @@ RelationStats JoinOrderOptimizer::GetDelimScanStats() {
 		throw InternalException("Unable to find delim scan stats!");
 	}
 	return *delim_scan_stats;
+}
+
+unique_ptr<LogicalOperator>
+JoinOrderOptimizer::CallSolveJoinOrderFixed(unique_ptr<LogicalOperator> plan,
+	                                         vector<LogicalOperator *> &exec_order) {
+	auto plan_backup = plan->Copy(context);
+	auto op = plan.get();
+	if (!query_graph_manager.Build(*this, *op, false)) {
+		JoinOrderOptimizer fallback_optimizer(context);
+		return fallback_optimizer.Optimize(std::move(plan_backup));
+	}
+
+	try {
+		if (!exec_order.empty()) {
+			auto cost_model = CostModel(query_graph_manager);
+			auto enumerator =
+			    PlanEnumerator(query_graph_manager, cost_model, query_graph_manager.GetQueryGraphEdges());
+			enumerator.InitLeafPlans();
+			enumerator.SolveJoinOrderFixed(exec_order);
+			query_graph_manager.plans = &enumerator.GetPlans();
+			return query_graph_manager.Reconstruct(std::move(plan));
+		}
+
+		if (GYO) {
+			// The GYO enumerator remains the source of the acyclic Yan+ plan.
+			// If reduction stops on a cyclic core, discard its partial DP table
+			// and reconstruct from a separate, ordinary DuckDB v1.5 enumerator.
+			auto gyo_cost_model = CostModel(query_graph_manager);
+			auto gyo_enumerator =
+			    PlanEnumerator(query_graph_manager, gyo_cost_model, query_graph_manager.GetQueryGraphEdges());
+			gyo_enumerator.root_op = op;
+			auto gyo_result = gyo_enumerator.SolveJoinOrderGYO();
+			if (gyo_result.applicable && gyo_result.acyclic) {
+				query_graph_manager.plans = &gyo_enumerator.GetPlans();
+				return query_graph_manager.Reconstruct(std::move(plan));
+			}
+			detected_cyclic_query = gyo_result.IsCyclic();
+
+			auto native_cost_model = CostModel(query_graph_manager);
+			auto native_enumerator =
+			    PlanEnumerator(query_graph_manager, native_cost_model, query_graph_manager.GetQueryGraphEdges());
+			native_enumerator.InitLeafPlans();
+			native_enumerator.SolveJoinOrder();
+			if (gyo_result.IsCyclic() && Settings::Get<YanplusCyclicBagsSetting>(context)) {
+				VirtualBagBoundary boundary;
+				if (native_enumerator.FindPlanDerivedGHDBoundary(gyo_result.cyclic_core, boundary)) {
+					query_graph_manager.SetVirtualBagBoundary(std::move(boundary));
+				}
+			}
+			query_graph_manager.plans = &native_enumerator.GetPlans();
+			auto result = query_graph_manager.Reconstruct(std::move(plan));
+			inserted_plan_derived_ghd_bag = query_graph_manager.InsertedVirtualBagFilter();
+			return result;
+		}
+	} catch (const NotImplementedException &) {
+		// The copied tree has not participated in relation extraction or
+		// reconstruction, so a deliberately unsupported Yan+ case can use a
+		// fresh native optimizer. Interrupts, resource failures, and internal
+		// errors must propagate instead of being silently retried.
+	}
+
+	JoinOrderOptimizer fallback_optimizer(context);
+	return fallback_optimizer.Optimize(std::move(plan_backup));
 }
 
 } // namespace duckdb

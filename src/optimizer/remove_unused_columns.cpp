@@ -20,6 +20,8 @@
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/planner/operator/logical_order.hpp"
 #include "duckdb/planner/operator/logical_projection.hpp"
+#include "duckdb/planner/operator/logical_create_bf.hpp"
+#include "duckdb/planner/operator/logical_use_bf.hpp"
 #include "duckdb/planner/operator/logical_set_operation.hpp"
 #include "duckdb/planner/operator/logical_simple.hpp"
 #include "duckdb/function/scalar/struct_utils.hpp"
@@ -321,6 +323,111 @@ void RemoveUnusedColumns::VisitOperator(LogicalOperator &op) {
 			}
 		}
 		comp_join.conditions = std::move(unique_conditions);
+	}
+
+	// Filter plans carry bindings outside the normal expression list. Keep them
+	// synchronized when column pruning rewrites a child binding.
+	if (op.type == LogicalOperatorType::LOGICAL_CREATE_BF) {
+		auto &create_bf = op.Cast<LogicalCreateBF>();
+		for (auto &filter_plan : create_bf.filter_plans) {
+			for (auto &binding : filter_plan->build) {
+				auto entry = column_references.find(binding);
+				if (entry != column_references.end() && !entry->second.bindings.empty()) {
+					binding = entry->second.bindings[0].get().binding;
+				}
+			}
+		}
+	} else if (op.type == LogicalOperatorType::LOGICAL_USE_BF) {
+		auto &use_bf = op.Cast<LogicalUseBF>();
+		for (auto &binding : use_bf.filter_plan->apply) {
+			auto entry = column_references.find(binding);
+			if (entry != column_references.end() && !entry->second.bindings.empty()) {
+				binding = entry->second.bindings[0].get().binding;
+			}
+		}
+	}
+}
+
+void RemoveUnusedColumns::GetUpdateBinding(Expression &expr) {
+	if (expr.GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF) {
+		auto &column_ref = expr.Cast<BoundColumnRefExpression>();
+		auto entry = global_map.find(column_ref.binding);
+		if (entry != global_map.end()) {
+			column_ref.binding = entry->second;
+		}
+		return;
+	}
+	ExpressionIterator::EnumerateChildren(expr, [&](Expression &child) { GetUpdateBinding(child); });
+}
+
+void RemoveUnusedColumns::VisitOperatorBottomUp(LogicalOperator &op) {
+	for (auto &child : op.children) {
+		VisitOperatorBottomUp(*child);
+	}
+
+	// Projection expressions are handled below while duplicate slots are
+	// collected. Applying the map here as well would rewrite them twice. Since
+	// the map describes simultaneous old-to-new positions, a shifted annotation
+	// such as slot 2 -> 1 must not subsequently follow an unrelated 1 -> 0
+	// duplicate-key mapping.
+	if (op.type != LogicalOperatorType::LOGICAL_PROJECTION) {
+		for (auto &expression : op.expressions) {
+			GetUpdateBinding(*expression);
+		}
+	}
+
+	if (op.type == LogicalOperatorType::LOGICAL_PROJECTION) {
+		auto &projection = op.Cast<LogicalProjection>();
+		vector<unique_ptr<Expression>> expressions;
+		column_binding_map_t<idx_t> first_occurrence;
+		for (idx_t index = 0; index < projection.expressions.size(); index++) {
+			auto &expression = projection.expressions[index];
+			GetUpdateBinding(*expression);
+			bool duplicate = false;
+			if (expression->GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF) {
+				auto binding = expression->Cast<BoundColumnRefExpression>().binding;
+				auto entry = first_occurrence.find(binding);
+				if (entry != first_occurrence.end()) {
+					global_map[ColumnBinding(projection.table_index, index)] =
+					    ColumnBinding(projection.table_index, entry->second);
+					duplicate = true;
+				} else {
+					first_occurrence.emplace(binding, expressions.size());
+				}
+			}
+			if (!duplicate) {
+				if (expressions.size() != index) {
+					global_map[ColumnBinding(projection.table_index, index)] =
+					    ColumnBinding(projection.table_index, expressions.size());
+				}
+				expressions.push_back(std::move(expression));
+			}
+		}
+		projection.expressions = std::move(expressions);
+	}
+
+	if (op.type == LogicalOperatorType::LOGICAL_ASOF_JOIN || op.type == LogicalOperatorType::LOGICAL_DELIM_JOIN ||
+	    op.type == LogicalOperatorType::LOGICAL_COMPARISON_JOIN) {
+		auto &join = op.Cast<LogicalComparisonJoin>();
+		for (auto &condition : join.conditions) {
+			GetUpdateBinding(*condition.left);
+			GetUpdateBinding(*condition.right);
+		}
+		vector<JoinCondition> unique_conditions;
+		for (auto &condition : join.conditions) {
+			bool duplicate = false;
+			for (auto &existing : unique_conditions) {
+				if (condition.comparison == existing.comparison && condition.left->Equals(*existing.left) &&
+				    condition.right->Equals(*existing.right)) {
+					duplicate = true;
+					break;
+				}
+			}
+			if (!duplicate) {
+				unique_conditions.push_back(std::move(condition));
+			}
+		}
+		join.conditions = std::move(unique_conditions);
 	}
 }
 

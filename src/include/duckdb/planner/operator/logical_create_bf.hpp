@@ -11,6 +11,7 @@
 #include "duckdb/optimizer/predicate_transfer/dag.hpp"
 
 namespace duckdb {
+class DynamicTableFilterSet;
 class PhysicalCreateBF;
 
 class LogicalCreateBF : public LogicalOperator {

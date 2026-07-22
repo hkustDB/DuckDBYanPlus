@@ -1571,6 +1571,37 @@ struct WriteBufferRowGroupCountSetting {
 	static constexpr idx_t SettingIndex = 93;
 };
 
+struct YanplusCyclicBagsSetting {
+	using RETURN_TYPE = bool;
+	static constexpr const char *Name = "yanplus_cyclic_bags";
+	static constexpr const char *Description = "Enable plan-derived cyclic bags in the Yan+ optimizer";
+	static constexpr const char *InputType = "BOOLEAN";
+	static constexpr const char *DefaultValue = "true";
+	static constexpr SettingScopeTarget Scope = SettingScopeTarget::LOCAL_DEFAULT;
+	static constexpr idx_t SettingIndex = 94;
+};
+
+struct YanplusEnableSetting {
+	using RETURN_TYPE = bool;
+	static constexpr const char *Name = "yanplus_enable";
+	static constexpr const char *Description = "Enable the Yan+ optimizer";
+	static constexpr const char *InputType = "BOOLEAN";
+	static constexpr const char *DefaultValue = "true";
+	static constexpr SettingScopeTarget Scope = SettingScopeTarget::LOCAL_DEFAULT;
+	static constexpr idx_t SettingIndex = 95;
+};
+
+struct YanplusSemijoinFilterSetting {
+	using RETURN_TYPE = YanplusSemiJoinFilterType;
+	static constexpr const char *Name = "yanplus_semijoin_filter";
+	static constexpr const char *Description = "Semi-join filter backend used by Yan+ (BLOOM or HASH)";
+	static constexpr const char *InputType = "VARCHAR";
+	static constexpr const char *DefaultValue = "BLOOM";
+	static constexpr SettingScopeTarget Scope = SettingScopeTarget::LOCAL_DEFAULT;
+	static constexpr idx_t SettingIndex = 96;
+	static void OnSet(SettingCallbackInfo &info, Value &input);
+};
+
 struct ZstdMinStringLengthSetting {
 	using RETURN_TYPE = idx_t;
 	static constexpr const char *Name = "zstd_min_string_length";
@@ -1579,11 +1610,11 @@ struct ZstdMinStringLengthSetting {
 	static constexpr const char *InputType = "UBIGINT";
 	static constexpr const char *DefaultValue = "4096";
 	static constexpr SettingScopeTarget Scope = SettingScopeTarget::GLOBAL_ONLY;
-	static constexpr idx_t SettingIndex = 94;
+	static constexpr idx_t SettingIndex = 97;
 };
 
 struct GeneratedSettingInfo {
-	static constexpr idx_t MaxSettingIndex = 95;
+	static constexpr idx_t MaxSettingIndex = 98;
 };
 
 //===----------------------------------------------------------------------===//

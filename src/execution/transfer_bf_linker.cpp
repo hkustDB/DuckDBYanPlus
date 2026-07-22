@@ -6,6 +6,7 @@
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/planner/operator/logical_projection.hpp"
 #include "duckdb/planner/operator/logical_comparison_join.hpp"
+#include "duckdb/planner/expression/bound_columnref_expression.hpp"
 
 namespace duckdb {
 
@@ -53,10 +54,14 @@ void TransferBFLinker::VisitOperator(LogicalOperator &op) {
 		if (op.type == LogicalOperatorType::LOGICAL_USE_BF) {
 			auto &bf_user = op.Cast<LogicalUseBF>();
 			auto &filter_plan = bf_user.filter_plan;
-			auto *related_creator = bf_creators[filter_plan.get()];
+			auto creator_entry = bf_creators.find(filter_plan.get());
+			auto *related_creator = creator_entry == bf_creators.end() ? nullptr : creator_entry->second;
 
 			if (related_creator != nullptr) {
 				idx_t plan_idx = FindPlanIndex(bf_user.filter_plan, related_creator->filter_plans);
+				if (plan_idx == std::numeric_limits<idx_t>::max()) {
+					break;
+				}
 				// after this, two plans point to the same memory
 				bf_user.filter_plan = related_creator->filter_plans[plan_idx];
 				bf_user.related_create_bf = related_creator;
@@ -76,9 +81,11 @@ void TransferBFLinker::VisitOperator(LogicalOperator &op) {
 				if (child->type == LogicalOperatorType::LOGICAL_USE_BF) {
 					auto &user = child->Cast<LogicalUseBF>();
 					if (user.related_create_bf == nullptr) {
-						auto moved_child = std::move(child); // Avoid use-after-move
-						child = make_uniq<LogicalEmptyResult>(std::move(moved_child));
-						break;
+						// A semi-join filter is only an optimization. If its creator
+						// disappeared during a plan copy/rewrite, remove the probe wrapper
+						// and preserve the original child/result semantics.
+						child = std::move(child->children[0]);
+						continue;
 					}
 				}
 				break;

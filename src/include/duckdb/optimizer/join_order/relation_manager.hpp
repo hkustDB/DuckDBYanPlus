@@ -18,8 +18,6 @@
 #include "duckdb/planner/logical_operator.hpp"
 #include "duckdb/planner/logical_operator_visitor.hpp"
 
-#include <iostream>
-
 namespace duckdb {
 
 class JoinOrderOptimizer;
@@ -77,13 +75,6 @@ public:
 	bool CrossProductWithRelationAllowed(idx_t relation_id);
 
 	void PrintRelationStats();
-
-	void PrintRelations() {
-		for (idx_t i = 0; i < relations.size(); i++) {
-			auto &relation = relations[i];
-			std::cout << relation->op.ToString() << std::endl;
-		}
-	};
 
 private:
 	ClientContext &context;

@@ -10,7 +10,7 @@ LogicalDistinct::LogicalDistinct(vector<unique_ptr<Expression>> targets, Distinc
     : LogicalOperator(LogicalOperatorType::LOGICAL_DISTINCT), distinct_type(distinct_type),
       distinct_targets(std::move(targets)) {
 }
-/*
+
 InsertionOrderPreservingMap<string> LogicalDistinct::ParamsToString() const {
 	auto result = LogicalOperator::ParamsToString();
 	if (!distinct_targets.empty()) {
@@ -20,40 +20,6 @@ InsertionOrderPreservingMap<string> LogicalDistinct::ParamsToString() const {
 	}
 	SetParamsEstimatedCardinality(result);
 	return result;
-}*/
-InsertionOrderPreservingMap<string> LogicalDistinct::ParamsToString() const {
-    InsertionOrderPreservingMap<string> result;
-    
-    // Add distinct type information
-    result["Distinct Type"] = distinct_type == DistinctType::DISTINCT ? "DISTINCT" : "DISTINCT ON";
-    
-    // Add distinct targets if any (similar to LogicalAggregate's groups handling)
-    if (!distinct_targets.empty()) {
-        string targets_info;
-        for (idx_t i = 0; i < distinct_targets.size(); i++) {
-            if (i > 0) {
-                targets_info += "\n";
-            }
-            targets_info += distinct_targets[i]->GetName();
-        }
-        result["Distinct Targets"] = targets_info;
-    }
-    
-    // Add column bindings information (manual string building like LogicalAggregate)
-    auto column_bindings = children[0]->GetColumnBindings();
-    if (!column_bindings.empty()) {
-        string bindings_info;
-        for (idx_t i = 0; i < column_bindings.size(); i++) {
-            if (i > 0) {
-                bindings_info += ", ";
-            }
-            bindings_info += column_bindings[i].ToString();
-        }
-        result["Column Bindings"] = bindings_info;
-    }
-    
-    SetParamsEstimatedCardinality(result);
-    return result;
 }
 
 void LogicalDistinct::ResolveTypes() {

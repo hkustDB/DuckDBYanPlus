@@ -25,29 +25,16 @@
 namespace duckdb {
 
 class QueryGraphManager;
-
-struct ColumnBindingHash {
-    std::size_t operator()(const ColumnBinding& binding) const {
-        // Hash the table_index and column_index directly
-        std::size_t h1 = std::hash<idx_t>{}(binding.table_index);
-        std::size_t h2 = std::hash<idx_t>{}(binding.column_index);
-        // Combine the hashes - a simple but effective approach
-        return h1 ^ (h2 << 1);
-    }
-};
+struct VirtualBagBoundary;
 
 // Relational hypergraph for GYO algorithm
 struct RelationalHypergraph {
 	// Maps column bindings to unique vertex IDs
 	column_binding_map_t<idx_t> column_to_vertex;
-	// Maps vertex IDs back to column bindings
-	vector<ColumnBinding> vertex_to_column;
 	// Each relation (hyperedge) is a set of vertices
 	vector<unordered_set<idx_t>> relations;
 	// Original relation index for each hyperedge
 	vector<idx_t> relation_indices;
-
-	unordered_set<idx_t> output_vertices;
 };
 
 class PlanEnumerator {
@@ -63,6 +50,35 @@ public:
 	void SolveJoinOrder();
 	void SolveJoinOrderFixed(vector<LogicalOperator*> &exec_order);
 	void InitLeafPlans();
+
+	struct GYOReductionStep {
+		idx_t ear_relation_idx;
+		idx_t witness_relation_idx;
+	};
+
+	struct GYOResult {
+		bool applicable = false;
+		bool acyclic = false;
+		vector<GYOReductionStep> reduction_steps;
+		vector<idx_t> cyclic_core;
+
+		bool IsCyclic() const {
+			return applicable && !acyclic;
+		}
+	};
+
+	//! Run GYO. For an acyclic graph this also populates this enumerator's
+	//! plans with the Yan+ join tree. For a cyclic graph it returns the
+	//! unreduced core without manufacturing a join order.
+	GYOResult SolveJoinOrderGYO();
+
+	//! Locate the first node in DuckDB's selected DP plan whose two children
+	//! both contain relations from the cyclic core.
+	bool FindPlanDerivedGHDBoundary(const vector<idx_t> &cyclic_core, VirtualBagBoundary &result) const;
+
+	//! Kept for compatibility with the Yan+ optimizer entry point. GYO no
+	//! longer inspects the wrapper operators around the join tree.
+	LogicalOperator *root_op = nullptr;
 
 	const reference_map_t<JoinRelationSet, unique_ptr<DPJoinNode>> &GetPlans() const;
 
@@ -105,27 +121,13 @@ private:
 	//! Solve the join order approximately using a greedy algorithm
 	void SolveJoinOrderApproximately();
 
-// GYO algorithm implementation
-public:
-	LogicalOperator *root_op = nullptr;
+	// GYO algorithm implementation
 
-    void SolveJoinOrderGYO();
-	void GetOutputVariables();
-	bool IsEar(RelationalHypergraph& graph, idx_t relation_idx, idx_t& witness_idx);
+	vector<idx_t> GetEarWitnesses(RelationalHypergraph &graph, idx_t relation_idx);
 	RelationalHypergraph BuildRelationalHypergraph();
-	LogicalOperator* FindActualQueryRoot(LogicalOperator* op);
-	void ExtractColumnBindingsFromExpression(Expression* expr);
 
 private:
-    // Reduction sequence for reconstructing the join tree
-    struct GYOReductionStep {
-        idx_t ear_relation_idx;      // Index of the relation being reduced
-        idx_t witness_relation_idx;  // Index of the witness relation
-    };
-    vector<GYOReductionStep> gyo_reduction_sequence;
-	column_binding_set_t output_variables;// All output variables
-	column_binding_set_t marker_bindings; // output variables not in join condition
-	idx_t group_by_num_count;
+	vector<GYOReductionStep> gyo_reduction_sequence;
 };
 
 } // namespace duckdb

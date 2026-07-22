@@ -4,11 +4,11 @@
 #include "duckdb/parallel/thread_context.hpp"
 
 namespace duckdb {
-PhysicalUseBF::PhysicalUseBF(vector<LogicalType> types, const shared_ptr<FilterPlan> &filter_plan,
-                             unique_ptr<BloomFilterUsage> bf, PhysicalCreateBF *related_create_bfs,
-                             idx_t estimated_cardinality)
-    : CachingPhysicalOperator(PhysicalOperatorType::USE_BF, std::move(types), estimated_cardinality),
-      filter_plan(filter_plan), related_creator(related_create_bfs), bf_to_use(std::move(bf)) {
+PhysicalUseBF::PhysicalUseBF(PhysicalPlan &physical_plan, vector<LogicalType> types,
+                             const shared_ptr<FilterPlan> &filter_plan, shared_ptr<SemiJoinFilterUsage> filter,
+                             PhysicalCreateBF *related_create_bfs, idx_t estimated_cardinality)
+    : CachingPhysicalOperator(physical_plan, PhysicalOperatorType::USE_BF, std::move(types), estimated_cardinality),
+      filter_plan(filter_plan), related_creator(related_create_bfs), filter_to_use(std::move(filter)) {
 }
 
 class UseBFState : public CachingOperatorState {
@@ -17,12 +17,10 @@ public:
 	static constexpr double SELECTIVITY_THRESHOLD = 0.9;
 
 public:
-	explicit UseBFState(bool valid_bf)
-	    : sel_vector(STANDARD_VECTOR_SIZE), lookup_results(STANDARD_VECTOR_SIZE), use_bf(valid_bf) {
+	explicit UseBFState(bool valid_bf) : sel_vector(STANDARD_VECTOR_SIZE), use_bf(valid_bf) {
 	}
 
 	SelectionVector sel_vector;
-	vector<uint32_t> lookup_results;
 
 	bool use_bf;
 	bool is_checked = false;
@@ -52,12 +50,13 @@ public:
 };
 
 unique_ptr<OperatorState> PhysicalUseBF::GetOperatorState(ExecutionContext &context) const {
-	return make_uniq<UseBFState>(bf_to_use->IsValid());
+	return make_uniq<UseBFState>(filter_to_use->IsValid());
 }
 
 InsertionOrderPreservingMap<string> PhysicalUseBF::ParamsToString() const {
 	InsertionOrderPreservingMap<string> result;
 	result["BF Creators"] = "0x" + std::to_string(reinterpret_cast<size_t>(related_creator)) + "\n";
+	result["Semi-Join Filter Type"] = filter_to_use->GetTypeName();
 	return result;
 }
 
@@ -80,16 +79,11 @@ OperatorResultType PhysicalUseBF::ExecuteInternal(ExecutionContext &context, Dat
 		return OperatorResultType::NEED_MORE_INPUT;
 	}
 
-	// 1. Lookup the BloomFilter
-	bf_to_use->Lookup(input, state.lookup_results);
-
-	// 2. Fill results
 	idx_t result_count = 0;
 	auto &sel = state.sel_vector;
-	for (size_t i = 0; i < input.size(); i++) {
-		sel.set_index(result_count, i);
-		result_count += state.lookup_results[i];
-	}
+	filter_to_use->Probe(input, sel, result_count);
+
+	// Fill the output using the selection produced by either backend.
 	if (result_count == input.size()) {
 		// nothing was filtered: skip adding any selection vectors
 		chunk.Reference(input);

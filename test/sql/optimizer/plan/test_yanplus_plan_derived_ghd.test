@@ -1,0 +1,157 @@
+# name: test/sql/optimizer/plan/test_yanplus_plan_derived_ghd.test
+# description: Yan+ derives a virtual GHD boundary for cyclic joins without changing the native join
+# group: [plan]
+
+statement ok
+SET threads = 1
+
+statement ok
+CREATE TABLE ghd_r(a INTEGER, b INTEGER)
+
+statement ok
+CREATE TABLE ghd_s(b INTEGER, c INTEGER)
+
+statement ok
+CREATE TABLE ghd_t(c INTEGER, a INTEGER)
+
+statement ok
+CREATE TABLE ghd_tail(a INTEGER, payload VARCHAR)
+
+statement ok
+INSERT INTO ghd_r VALUES (1, 10), (1, 10), (2, 20), (NULL, 30), (3, NULL)
+
+statement ok
+INSERT INTO ghd_s VALUES (10, 100), (20, 200), (30, 300), (NULL, 400)
+
+statement ok
+INSERT INTO ghd_t VALUES (100, 1), (200, 2), (300, NULL), (100, 9), (NULL, 3)
+
+statement ok
+INSERT INTO ghd_tail VALUES (1, 'one'), (2, 'two'), (9, 'nine'), (NULL, 'null')
+
+# Native DuckDB result used as the correctness baseline.
+statement ok
+SET yanplus_enable = false
+
+query III rowsort
+SELECT r.a, r.b, s.c
+FROM ghd_r r
+JOIN ghd_s s ON r.b = s.b
+JOIN ghd_t t ON s.c = t.c AND r.a = t.a
+----
+1	10	100
+1	10	100
+2	20	200
+
+# The same native binary joins are retained; only the virtual bag boundary is
+# wrapped by the existing semi-join operators.
+statement ok
+SET yanplus_enable = true
+
+statement ok
+SET yanplus_cyclic_bags = false
+
+query II
+EXPLAIN SELECT r.a, r.b, s.c
+FROM ghd_r r
+JOIN ghd_s s ON r.b = s.b
+JOIN ghd_t t ON s.c = t.c AND r.a = t.a
+----
+physical_plan	<!REGEX>:.*(CREATE_BF|USE_BF).*
+
+statement ok
+SET yanplus_cyclic_bags = true
+
+query III rowsort
+SELECT r.a, r.b, s.c
+FROM ghd_r r
+JOIN ghd_s s ON r.b = s.b
+JOIN ghd_t t ON s.c = t.c AND r.a = t.a
+----
+1	10	100
+1	10	100
+2	20	200
+
+query II
+EXPLAIN SELECT r.a, r.b, s.c
+FROM ghd_r r
+JOIN ghd_s s ON r.b = s.b
+JOIN ghd_t t ON s.c = t.c AND r.a = t.a
+----
+physical_plan	<REGEX>:.*(USE_BF.*CREATE_BF|CREATE_BF.*USE_BF).*
+
+# A tail can be outside the cyclic core. Boundary selection must descend the
+# native DP tree until both sides contain a core relation.
+query IIIT rowsort
+SELECT r.a, r.b, s.c, tail.payload
+FROM ghd_r r
+JOIN ghd_s s ON r.b = s.b
+JOIN ghd_t t ON s.c = t.c AND r.a = t.a
+JOIN ghd_tail tail ON tail.a = r.a
+----
+1	10	100	one
+1	10	100	one
+2	20	200	two
+
+# A residual predicate stays on the native join/filter and remains the final
+# correctness check after the lossy Bloom filter.
+query III rowsort
+SELECT r.a, r.b, s.c
+FROM ghd_r r
+JOIN ghd_s s ON r.b = s.b
+JOIN ghd_t t ON s.c = t.c AND r.a = t.a AND r.b < t.c
+----
+1	10	100
+1	10	100
+2	20	200
+
+# Equality operands with more than one expression binding are outside the GYO
+# key model and conservatively retain DuckDB's native optimizer path.
+query III rowsort
+SELECT r.a, r.b, s.c
+FROM ghd_r r
+JOIN ghd_s s ON r.b = s.b
+JOIN ghd_t t ON s.c = t.c AND abs(r.a) = t.a
+----
+1	10	100
+1	10	100
+2	20	200
+
+query II
+EXPLAIN SELECT r.a, r.b, s.c
+FROM ghd_r r
+JOIN ghd_s s ON r.b = s.b
+JOIN ghd_t t ON s.c = t.c AND abs(r.a) = t.a
+----
+physical_plan	<!REGEX>:.*(CREATE_BF|USE_BF).*
+
+# An empty Bloom creator must still finalize when verification forces the
+# parallel finalization branch (including in debug builds).
+statement ok
+CREATE TABLE ghd_empty_r(a INTEGER, b INTEGER)
+
+statement ok
+CREATE TABLE ghd_empty_s(b INTEGER, c INTEGER)
+
+statement ok
+CREATE TABLE ghd_empty_t(c INTEGER, a INTEGER)
+
+statement ok
+SET threads = 4
+
+statement ok
+PRAGMA verify_parallelism
+
+query I
+SELECT count(*)
+FROM ghd_empty_r r
+JOIN ghd_empty_s s ON r.b = s.b
+JOIN ghd_empty_t t ON s.c = t.c AND r.a = t.a
+----
+0
+
+statement ok
+PRAGMA disable_verify_parallelism
+
+statement ok
+SET threads = 1

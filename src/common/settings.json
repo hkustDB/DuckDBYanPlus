@@ -1078,6 +1078,27 @@
         "default_value": "5"
     },
     {
+        "name": "yanplus_cyclic_bags",
+        "description": "Enable plan-derived cyclic bags in the Yan+ optimizer",
+        "type": "BOOLEAN",
+        "default_scope": "local",
+        "default_value": "true"
+    },
+    {
+        "name": "yanplus_enable",
+        "description": "Enable the Yan+ optimizer",
+        "type": "BOOLEAN",
+        "default_scope": "local",
+        "default_value": "true"
+    },
+    {
+        "name": "yanplus_semijoin_filter",
+        "description": "Semi-join filter backend used by Yan+ (BLOOM or HASH)",
+        "type": "ENUM<YanplusSemiJoinFilterType>",
+        "default_scope": "local",
+        "default_value": "BLOOM"
+    },
+    {
         "name": "zstd_min_string_length",
         "description": "The (average) length at which to enable ZSTD compression, defaults to 4096",
         "type": "UBIGINT",

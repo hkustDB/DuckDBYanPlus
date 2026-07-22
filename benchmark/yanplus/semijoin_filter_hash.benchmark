@@ -1,0 +1,25 @@
+# name: benchmark/yanplus/semijoin_filter_hash.benchmark
+# description: Plan-derived cyclic Yan+ bag using an exact Hash semi-join filter
+# group: [yanplus]
+
+name Yan+ cyclic bag semi-join (Hash)
+group yanplus
+subgroup semijoin_filter
+
+load
+SET threads = 4;
+SET yanplus_enable = true;
+SET yanplus_cyclic_bags = true;
+SET yanplus_semijoin_filter = 'hash';
+CREATE TABLE yan_r AS
+    SELECT (i % 500000)::INTEGER AS a, i::INTEGER AS b FROM range(1000000) t(i);
+CREATE TABLE yan_s AS
+    SELECT i::INTEGER AS b, (i % 500000)::INTEGER AS c FROM range(1000000) t(i);
+CREATE TABLE yan_t AS
+    SELECT (i * 8)::INTEGER AS c, (i * 8)::INTEGER AS a FROM range(62500) t(i);
+
+run
+SELECT r.a, r.b, s.c
+FROM yan_r r
+JOIN yan_s s ON r.b = s.b
+JOIN yan_t t ON s.c = t.c AND r.a = t.a;

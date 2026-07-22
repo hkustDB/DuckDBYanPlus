@@ -1,0 +1,36 @@
+# name: test/sql/optimizer/yanplus_settings.test
+# description: Yan+ feature and semi-join backend settings
+# group: [optimizer]
+
+query TTT
+SELECT current_setting('yanplus_enable'), current_setting('yanplus_cyclic_bags'),
+       current_setting('yanplus_semijoin_filter');
+----
+true	true	BLOOM
+
+statement ok
+SET yanplus_semijoin_filter = 'hash'
+
+query I
+SELECT current_setting('yanplus_semijoin_filter') = 'hash';
+----
+true
+
+statement ok
+SET yanplus_semijoin_filter = 'bloom'
+
+statement error
+SET yanplus_semijoin_filter = 'unknown'
+----
+Not implemented Error: Enum value: unrecognized value "unknown" for enum "YanplusSemiJoinFilterType"
+
+statement ok
+SET yanplus_enable = false
+
+statement ok
+SET yanplus_cyclic_bags = false
+
+query TT
+SELECT current_setting('yanplus_enable'), current_setting('yanplus_cyclic_bags');
+----
+false	false

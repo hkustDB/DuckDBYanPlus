@@ -107,6 +107,8 @@ private:
 protected:
 	//! The map of column references
 	column_binding_map_t<ReferencedColumn> column_references;
+	//! Binding rewrites collected by the Yan+ bottom-up duplicate projection pass.
+	column_binding_map_t<ColumnBinding> global_map;
 
 private:
 	//! The current mode of the pruner, enables/disables certain behaviors
@@ -116,11 +118,16 @@ private:
 //! The RemoveUnusedColumns optimizer traverses the logical operator tree and removes any columns that are not required
 class RemoveUnusedColumns : public BaseColumnPruner {
 public:
-	RemoveUnusedColumns(Binder &binder, ClientContext &context, bool is_root = false)
+	RemoveUnusedColumns(Binder &binder, ClientContext &context, bool is_root = false,
+	                    bool root_distinct_pruning = false)
 	    : binder(binder), context(context), everything_referenced(is_root) {
+		(void)root_distinct_pruning;
 	}
 
 	void VisitOperator(LogicalOperator &op) override;
+	//! Yan+ uses this after aggregate pushdown to collapse duplicate projection bindings.
+	void VisitOperatorBottomUp(LogicalOperator &op);
+	void GetUpdateBinding(Expression &expr);
 
 private:
 	Binder &binder;

@@ -27,10 +27,6 @@ public:
 	//! The filter expression
 	unique_ptr<Expression> expression;
 
-	//! Runtime Statistics: Filter selectivity
-	mutable atomic<bool> is_estimated;
-	mutable atomic<double> filter_selectivity;
-
 public:
 	unique_ptr<OperatorState> GetOperatorState(ExecutionContext &context) const override;
 

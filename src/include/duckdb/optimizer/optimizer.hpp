@@ -43,6 +43,7 @@ private:
 
 	bool HasJoins(LogicalOperator* op);
 	QueryType DetectQueryType(LogicalOperator* op);
+	bool IsYanplusEligible(LogicalOperator *op, QueryType query_type);
 	int DetermineMaxHeight(LogicalOperator* op);
 	void PrintOperatorBindings(LogicalOperator* op, const string& prefix = "");
 

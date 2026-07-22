@@ -9,9 +9,9 @@
 #pragma once
 
 #include "duckdb/execution/physical_operator.hpp"
-#include "duckdb/optimizer/predicate_transfer/bloom_filter/bloom_filter.hpp"
 #include "duckdb/common/radix_partitioning.hpp"
 #include "duckdb/optimizer/predicate_transfer/dag.hpp"
+#include "duckdb/optimizer/predicate_transfer/semi_join_filter.hpp"
 
 namespace duckdb {
 class CreateBFGlobalSinkState;
@@ -21,10 +21,11 @@ public:
 	static constexpr const PhysicalOperatorType TYPE = PhysicalOperatorType::CREATE_BF;
 
 public:
-	PhysicalCreateBF(vector<LogicalType> types, const vector<shared_ptr<FilterPlan>> &filter_plans,
+	PhysicalCreateBF(PhysicalPlan &physical_plan, vector<LogicalType> types,
+	                 const vector<shared_ptr<FilterPlan>> &filter_plans,
 	                 vector<shared_ptr<DynamicTableFilterSet>> dynamic_filter_sets,
 	                 vector<vector<ColumnBinding>> &dynamic_filter_cols, idx_t estimated_cardinality,
-	                 bool is_probing_side);
+	                 bool is_probing_side, YanplusSemiJoinFilterType filter_type);
 
 	// We use a mutable boolean variable to mark if this operator successfully materializes and creates its BFs.
 	// This variable is helpful for dynamic pipeline scheduling. It allows us to end the pipeline that has
@@ -35,6 +36,7 @@ public:
 	shared_ptr<Pipeline> this_pipeline;
 
 	vector<shared_ptr<FilterPlan>> filter_plans;
+	YanplusSemiJoinFilterType filter_type;
 
 	//! Unified BFs contain all BFs, and they can be reused by PhysicalUseBF.
 	struct VectorHash {
@@ -46,8 +48,8 @@ public:
 			return hash;
 		}
 	};
-	unordered_map<vector<idx_t>, shared_ptr<BloomFilter>, VectorHash> unique_bloom_filters;
-	vector<unique_ptr<BloomFilterUsage>> bf_to_create;
+	unordered_map<vector<idx_t>, shared_ptr<SemiJoinFilter>, VectorHash> unique_filters;
+	vector<shared_ptr<SemiJoinFilterUsage>> filters_to_create;
 
 	//! Min-max Filters
 	vector<vector<ColumnBinding>> min_max_applied_cols;
@@ -61,7 +63,8 @@ public:
 	unique_ptr<GlobalSourceState> GetGlobalSourceState(ClientContext &context) const override;
 	unique_ptr<LocalSourceState> GetLocalSourceState(ExecutionContext &context,
 	                                                 GlobalSourceState &gstate) const override;
-	SourceResultType GetData(ExecutionContext &context, DataChunk &chunk, OperatorSourceInput &input) const override;
+	SourceResultType GetDataInternal(ExecutionContext &context, DataChunk &chunk,
+	                                 OperatorSourceInput &input) const override;
 
 	bool IsSource() const override {
 		return true;

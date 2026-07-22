@@ -25,7 +25,7 @@ namespace duckdb {
 
 class JoinOrderOptimizer {
 public:
-	explicit JoinOrderOptimizer(ClientContext &context, bool GYO = false) : context(context), query_graph_manager(context), GYO(GYO) {}
+	explicit JoinOrderOptimizer(ClientContext &context, bool GYO = false);
 	JoinOrderOptimizer CreateChildOptimizer();
 
 public:
@@ -39,6 +39,12 @@ public:
 	RelationStats GetDelimScanStats();
 
 	unique_ptr<LogicalOperator> CallSolveJoinOrderFixed(unique_ptr<LogicalOperator> plan, vector<LogicalOperator*> &exec_order);
+	bool DetectedCyclicQuery() const {
+		return detected_cyclic_query;
+	}
+	bool InsertedPlanDerivedGHDBag() const {
+		return inserted_plan_derived_ghd_bag;
+	}
 
 	const QueryGraphEdges &GetQueryGraphEdges() const {
 		return query_graph_manager.GetQueryGraphEdges();
@@ -63,6 +69,8 @@ private:
 	unordered_set<std::string> join_nodes_in_full_plan;
 
 	bool GYO;
+	bool detected_cyclic_query = false;
+	bool inserted_plan_derived_ghd_bag = false;
 
 	//! Mapping from materialized CTE index to stats
 	unordered_map<idx_t, RelationStats> materialized_cte_stats;

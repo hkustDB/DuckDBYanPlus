@@ -502,6 +502,8 @@ enum class WindowExcludeMode : uint8_t;
 
 enum class WindowMergeSortStage : uint8_t;
 
+enum class YanplusSemiJoinFilterType : uint8_t;
+
 
 template<>
 const char* EnumUtil::ToChars<ARTConflictType>(ARTConflictType value);
@@ -1208,6 +1210,9 @@ const char* EnumUtil::ToChars<WindowExcludeMode>(WindowExcludeMode value);
 template<>
 const char* EnumUtil::ToChars<WindowMergeSortStage>(WindowMergeSortStage value);
 
+template<>
+const char* EnumUtil::ToChars<YanplusSemiJoinFilterType>(YanplusSemiJoinFilterType value);
+
 
 template<>
 ARTConflictType EnumUtil::FromString<ARTConflictType>(const char *value);
@@ -1913,6 +1918,9 @@ WindowExcludeMode EnumUtil::FromString<WindowExcludeMode>(const char *value);
 
 template<>
 WindowMergeSortStage EnumUtil::FromString<WindowMergeSortStage>(const char *value);
+
+template<>
+YanplusSemiJoinFilterType EnumUtil::FromString<YanplusSemiJoinFilterType>(const char *value);
 
 
 }
