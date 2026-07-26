@@ -1,0 +1,102 @@
+# name: test/sql/optimizer/plan/test_yanplus_lsqb_q2.test
+# description: LSQB Q2 exercises the cyclic virtual-bag path with Bloom and Hash filters
+# group: [plan]
+
+statement ok
+SET threads = 1
+
+statement ok
+CREATE TABLE Person_knows_Person(Person1Id BIGINT, Person2Id BIGINT)
+
+statement ok
+CREATE TABLE Comment(hasCreator_PersonId BIGINT, replyOf_PostId BIGINT)
+
+statement ok
+CREATE TABLE Post(hasCreator_PersonId BIGINT, PostId BIGINT)
+
+statement ok
+INSERT INTO Person_knows_Person VALUES (1, 2), (2, 3), (3, 1), (4, 9)
+
+statement ok
+INSERT INTO Comment VALUES (1, 10), (2, 20), (3, 30), (4, 40), (NULL, 50)
+
+statement ok
+INSERT INTO Post VALUES (2, 10), (3, 20), (1, 30), (8, 40), (9, NULL)
+
+# This is the query in lsqb/q2.sql. Its three relations and three equality
+# edges form a triangle, so GYO cannot remove an ear.
+statement ok
+SET yanplus_enable = false
+
+query I
+SELECT count(*)
+FROM Person_knows_Person, Comment, Post
+WHERE Person_knows_Person.Person1Id = Comment.hasCreator_PersonId
+	AND Person_knows_Person.Person2Id = Post.hasCreator_PersonId
+	AND Comment.replyOf_PostId = Post.PostId
+----
+3
+
+# Disabling cyclic bags leaves DuckDB's selected binary join tree unwrapped.
+statement ok
+SET yanplus_enable = true
+
+statement ok
+SET yanplus_cyclic_bags = false
+
+query II
+EXPLAIN SELECT count(*)
+FROM Person_knows_Person, Comment, Post
+WHERE Person_knows_Person.Person1Id = Comment.hasCreator_PersonId
+	AND Person_knows_Person.Person2Id = Post.hasCreator_PersonId
+	AND Comment.replyOf_PostId = Post.PostId
+----
+physical_plan	<!REGEX>:.*(CREATE_BF|USE_BF).*
+
+# Bloom is the default. The virtual bag adds wrappers at one boundary without
+# replacing the aggregate or the native hash joins.
+statement ok
+SET yanplus_cyclic_bags = true
+
+statement ok
+SET yanplus_semijoin_filter = 'bloom'
+
+query I
+SELECT count(*)
+FROM Person_knows_Person, Comment, Post
+WHERE Person_knows_Person.Person1Id = Comment.hasCreator_PersonId
+	AND Person_knows_Person.Person2Id = Post.hasCreator_PersonId
+	AND Comment.replyOf_PostId = Post.PostId
+----
+3
+
+query II
+EXPLAIN SELECT count(*)
+FROM Person_knows_Person, Comment, Post
+WHERE Person_knows_Person.Person1Id = Comment.hasCreator_PersonId
+	AND Person_knows_Person.Person2Id = Post.hasCreator_PersonId
+	AND Comment.replyOf_PostId = Post.PostId
+----
+physical_plan	<REGEX>:.*UNGROUPED_AGGREGATE.*HASH_JOIN.*(USE_BF.*CREATE_BF|CREATE_BF.*USE_BF).*Semi-Join Filter Type:.*BLOOM.*
+
+# Exact Hash uses the identical selected join tree and virtual-bag boundary.
+statement ok
+SET yanplus_semijoin_filter = 'hash'
+
+query I
+SELECT count(*)
+FROM Person_knows_Person, Comment, Post
+WHERE Person_knows_Person.Person1Id = Comment.hasCreator_PersonId
+	AND Person_knows_Person.Person2Id = Post.hasCreator_PersonId
+	AND Comment.replyOf_PostId = Post.PostId
+----
+3
+
+query II
+EXPLAIN SELECT count(*)
+FROM Person_knows_Person, Comment, Post
+WHERE Person_knows_Person.Person1Id = Comment.hasCreator_PersonId
+	AND Person_knows_Person.Person2Id = Post.hasCreator_PersonId
+	AND Comment.replyOf_PostId = Post.PostId
+----
+physical_plan	<REGEX>:.*UNGROUPED_AGGREGATE.*HASH_JOIN.*(USE_BF.*CREATE_BF|CREATE_BF.*USE_BF).*Semi-Join Filter Type:.*HASH.*

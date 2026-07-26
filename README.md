@@ -38,11 +38,52 @@ The Yan+ settings are local DuckDB settings:
 For example, the same query can be compared with the two filter backends using:
 
 ```sql
+SET yanplus_enable = true;
+SET yanplus_cyclic_bags = true;
+
 SET yanplus_semijoin_filter = 'bloom'; -- default
 -- run the query
 
 SET yanplus_semijoin_filter = 'hash';
 -- run the same query
+```
+
+### Verify semi-join operator selection
+
+Use `EXPLAIN` on the same query after changing only
+`yanplus_semijoin_filter`. A cyclic plan using the experimental virtual-bag
+path contains both `CREATE_BF` and `USE_BF`; each wrapper reports
+`Semi-Join Filter Type: BLOOM` or `Semi-Join Filter Type: HASH`.
+
+For example, after loading an LSQB database:
+
+```sql
+SET yanplus_enable = true;
+SET yanplus_cyclic_bags = true;
+
+SET yanplus_semijoin_filter = 'bloom';
+EXPLAIN
+SELECT count(*)
+FROM Person_knows_Person, Comment, Post
+WHERE Person_knows_Person.Person1Id = Comment.hasCreator_PersonId
+  AND Person_knows_Person.Person2Id = Post.hasCreator_PersonId
+  AND Comment.replyOf_PostId = Post.PostId;
+
+SET yanplus_semijoin_filter = 'hash';
+EXPLAIN
+SELECT count(*)
+FROM Person_knows_Person, Comment, Post
+WHERE Person_knows_Person.Person1Id = Comment.hasCreator_PersonId
+  AND Person_knows_Person.Person2Id = Post.hasCreator_PersonId
+  AND Comment.replyOf_PostId = Post.PostId;
+```
+
+The LSQB-Q2 regression runs this triangle query with native DuckDB, Bloom,
+and Hash, checks equal results, and checks the physical-plan markers:
+
+```sh
+build/release/test/unittest \
+  test/sql/optimizer/plan/test_yanplus_lsqb_q2.test
 ```
 
 ## Build
@@ -71,6 +112,12 @@ BUILD_BENCHMARK=1 make # Build with benchmark support
 The reproducible Bloom-versus-Hash experiment is documented in
 [`benchmark/yanplus/README.md`](benchmark/yanplus/README.md). It runs the same cyclic
 query and plan with only the semi-join-filter backend changed.
+
+```sh
+python3 benchmark/yanplus/compare_semijoin_filters.py \
+  --runner build/release/benchmark/benchmark_runner \
+  --output benchmark/yanplus/results.csv
+```
 
 - Sub-Graph Pattern Benchmark (SGPB) 
 
