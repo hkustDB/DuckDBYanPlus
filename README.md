@@ -35,6 +35,11 @@ The Yan+ settings are local DuckDB settings:
 | `yanplus_cyclic_bags` | `true` | Enable plan-derived virtual bags for cyclic queries. |
 | `yanplus_semijoin_filter` | `BLOOM` | Select `BLOOM` or exact `HASH` semi-join filters. |
 
+DuckDB now defaults to at most 64 threads: it uses 64 on the 72-logical-CPU
+experiment host and still uses fewer on a smaller host. An explicit
+`SET threads = N` remains an override; `RESET threads` restores the capped
+default.
+
 For example, the same query can be compared with the two filter backends using:
 
 ```sql
@@ -113,11 +118,28 @@ The reproducible Bloom-versus-Hash experiment is documented in
 [`benchmark/yanplus/README.md`](benchmark/yanplus/README.md). It runs the same cyclic
 query and plan with only the semi-join-filter backend changed.
 
+On the 72-logical-CPU experiment host, all provided experiment launchers use
+64 DuckDB threads and Linux `taskset --cpu-list 0-15,24-71`. Thus logical CPUs
+16–23 are excluded. The query-suite launchers disable internal pinning and
+rebuild the worker pool before timing. The v1.5 scheduler also maps automatic
+startup pinning onto the inherited allowed-CPU mask instead of global
+sequential CPU IDs, which keeps the benchmark runner inside the same mask.
+
 ```sh
 python3 benchmark/yanplus/compare_semijoin_filters.py \
   --runner build/release/benchmark/benchmark_runner \
   --output benchmark/yanplus/results.csv
 ```
+
+For the query-suite launcher, the defaults are equivalent to:
+
+```sh
+./auto_run.sh lsqb lsqb_test 3 64 0-15,24-71
+```
+
+`taskset` is Linux-only and the values are logical CPU IDs. Check the target
+host layout with `lscpu -e=CPU,CORE,SOCKET,NODE` before using this machine-specific
+mask.
 
 - Sub-Graph Pattern Benchmark (SGPB) 
 

@@ -7,6 +7,10 @@ DUCKDB_PATHS=(
     "./duckdb_YanPlus"
 )
 
+# Fixed experiment policy. Environment variables allow deliberate overrides.
+NUM_THREADS=${YANPLUS_THREADS:-64}
+CPU_LIST=${YANPLUS_CPU_LIST:-0-15,24-71}
+
 # Configuration - Define query files with their corresponding databases
 declare -A QUERY_DATABASE_MAP=(
     ["graph/q1.sql"]="graph_db"
@@ -24,6 +28,44 @@ DEFAULT_DATABASE="graph_db"
 
 # Ensure log directory exists
 mkdir -p log
+
+validate_experiment_cpu_policy() {
+    if [ "$(uname -s)" != "Linux" ]; then
+        echo "Error: reproducible CPU affinity requires Linux taskset." >&2
+        return 1
+    fi
+    if ! command -v taskset >/dev/null 2>&1; then
+        echo "Error: taskset is required (install the util-linux package)." >&2
+        return 1
+    fi
+    if ! [[ "${NUM_THREADS}" =~ ^[1-9][0-9]*$ ]]; then
+        echo "Error: YANPLUS_THREADS must be a positive integer, got '${NUM_THREADS}'." >&2
+        return 1
+    fi
+
+    local available_cpu_count
+    available_cpu_count=$(taskset --cpu-list "${CPU_LIST}" nproc 2>/dev/null)
+    if ! [[ "${available_cpu_count}" =~ ^[1-9][0-9]*$ ]]; then
+        echo "Error: invalid or unavailable CPU list '${CPU_LIST}'." >&2
+        return 1
+    fi
+    if [ "${available_cpu_count}" -lt "${NUM_THREADS}" ]; then
+        echo "Error: ${NUM_THREADS} DuckDB threads exceed the ${available_cpu_count} CPUs in '${CPU_LIST}'." >&2
+        return 1
+    fi
+}
+
+thread_setup_sql() {
+    local duckdb_path="$1"
+    local pin_threads_count
+    pin_threads_count=$(taskset --cpu-list "${CPU_LIST}" "${duckdb_path}" -csv -noheader \
+        -c "SELECT count(*) FROM duckdb_settings() WHERE name = 'pin_threads';" 2>/dev/null || true)
+    if [ "${pin_threads_count}" = "1" ]; then
+        echo "SET pin_threads = 'off'; SET threads = 1; SET threads = ${NUM_THREADS};"
+    else
+        echo "SET threads = ${NUM_THREADS};"
+    fi
+}
 
 # Function to run memory monitoring for a single DuckDB executable
 run_memory_test() {
@@ -52,6 +94,8 @@ run_memory_test() {
         echo "DuckDB Path: $duckdb_path"
         echo "Query File: $query_file"
         echo "Database File: $database_file"
+        echo "DuckDB Threads: $NUM_THREADS"
+        echo "Allowed CPU IDs: $CPU_LIST"
         echo "Start Time: $(date)"
         echo "========================================"
         echo ""
@@ -80,7 +124,10 @@ run_memory_test() {
     
     # Start DuckDB query in the background WITHOUT timeout
     echo "Starting DuckDB process..." | tee -a "$log_file"
-    "$duckdb_path" "$database_file" < "$query_file" &
+    local setup_sql
+    setup_sql=$(thread_setup_sql "$duckdb_path")
+    taskset --cpu-list "$CPU_LIST" "$duckdb_path" \
+        -cmd "$setup_sql" "$database_file" < "$query_file" &
     local duckdb_pid=$!
     
     # Initialize variables
@@ -469,7 +516,9 @@ main() {
             echo ""
             echo "Execution Policy:"
             echo "  - NO timeout - queries run until natural completion"
-            echo "  - Direct process monitoring (no wrapper processes)"
+            echo "  - DuckDB threads: $NUM_THREADS"
+            echo "  - Allowed logical CPU IDs: $CPU_LIST (Linux taskset)"
+            echo "  - Direct DuckDB PID monitoring (taskset execs the process)"
             echo "  - Continuous memory sampling every 0.5 seconds"
             echo "  - Automatic cleanup on process termination"
             echo ""
@@ -482,6 +531,7 @@ main() {
             ;;
         "")
             # Default: run all queries
+            validate_experiment_cpu_policy || exit 1
             run_all_queries
             ;;
         *)

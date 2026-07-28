@@ -116,19 +116,19 @@ echo "Starting graph YanPlus_NoGYO"
 # ./auto_run.sh graph parallel_graph 4 2
 
 # echo "Starting job origin parallel"
-# ./auto_run.sh job parallel_job 1 72
+# ./auto_run.sh job parallel_job 1 64 0-15,24-71
 # echo "Starting job RPT"
-# ./auto_run.sh job parallel_job 2 72
+# ./auto_run.sh job parallel_job 2 64 0-15,24-71
 # echo "Starting job YanPlus"
-# ./auto_run.sh job parallel_job 3 72
+# ./auto_run.sh job parallel_job 3 64 0-15,24-71
 # echo "Starting job YanPlus_GYO"
-# ./auto_run.sh job parallel_job 4 72
+# ./auto_run.sh job parallel_job 4 64 0-15,24-71
 
 # echo "Starting lsqb origin parallel"
-# ./auto_run.sh lsqb parallel_lsqb 1 72
+# ./auto_run.sh lsqb parallel_lsqb 1 64 0-15,24-71
 # echo "Starting lsqb RPT"
-# ./auto_run.sh lsqb parallel_lsqb 2 72
+# ./auto_run.sh lsqb parallel_lsqb 2 64 0-15,24-71
 # echo "Starting lsqb YanPlus"
-# ./auto_run.sh lsqb parallel_lsqb 3 72
+# ./auto_run.sh lsqb parallel_lsqb 3 64 0-15,24-71
 # echo "Starting lsqb YanPlus_GYO"
-# ./auto_run.sh lsqb parallel_lsqb 4 72
+# ./auto_run.sh lsqb parallel_lsqb 4 64 0-15,24-71

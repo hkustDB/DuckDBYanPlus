@@ -1,5 +1,7 @@
 #!/bin/bash
 
+set -o pipefail
+
 trap 'echo "Interrupted"; kill 0; exit 130' INT
 
 uNames=`uname -s`
@@ -21,7 +23,8 @@ INPUT_DIR_PATH="${SCRIPT_PATH}/${INPUT_DIR}"
 # graph, tpch, lsqb
 DATABASE=$1
 
-NUM_THREADS=${4:-72}
+NUM_THREADS=${4:-64}
+CPU_LIST=${5:-${YANPLUS_CPU_LIST:-0-15,24-71}}
 
 DUCK_NUM=${3:-1}
 
@@ -35,11 +38,52 @@ declare -A DUCK_MAP=(
 )
 
 if [[ -z ${DUCK_MAP[$DUCK_NUM]} ]]; then
-  echo "Usage: $0 <db> <dir> <duck_num> [threads]" >&2
+  echo "Usage: $0 <db> <dir> <duck_num> [threads] [cpu_list]" >&2
   echo "duck_num: 1-5=original logic, 6=multi-statement handling" >&2
   exit 1
 fi
 DUCKDB_BIN=${DUCK_MAP[$DUCK_NUM]}
+
+if [ "$osName" != "Linu" ]; then
+    echo "Error: reproducible CPU affinity requires Linux taskset." >&2
+    exit 1
+fi
+if ! command -v taskset >/dev/null 2>&1; then
+    echo "Error: taskset is required (install the util-linux package)." >&2
+    exit 1
+fi
+if ! [[ "${NUM_THREADS}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "Error: threads must be a positive integer, got '${NUM_THREADS}'." >&2
+    exit 1
+fi
+if [ ! -x "${DUCKDB_BIN}" ]; then
+    echo "Error: DuckDB executable not found or not executable: ${DUCKDB_BIN}" >&2
+    exit 1
+fi
+
+AVAILABLE_CPU_COUNT=$(taskset --cpu-list "${CPU_LIST}" nproc 2>/dev/null)
+if ! [[ "${AVAILABLE_CPU_COUNT}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "Error: invalid or unavailable CPU list '${CPU_LIST}'." >&2
+    exit 1
+fi
+if [ "${AVAILABLE_CPU_COUNT}" -lt "${NUM_THREADS}" ]; then
+    echo "Error: ${NUM_THREADS} DuckDB threads exceed the ${AVAILABLE_CPU_COUNT} CPUs in '${CPU_LIST}'." >&2
+    exit 1
+fi
+
+# DuckDB v1.5 automatically pins workers on machines with more than 64 CPUs.
+# Rebuild its worker pool with internal pinning disabled so taskset remains the
+# authoritative affinity policy. Older baselines without this setting retain
+# their normal SET threads behavior.
+THREAD_SETUP_SQL="SET threads TO ${NUM_THREADS};"
+PIN_THREADS_COUNT=$(taskset --cpu-list "${CPU_LIST}" "${DUCKDB_BIN}" -csv -noheader \
+    -c "SELECT count(*) FROM duckdb_settings() WHERE name = 'pin_threads';" 2>/dev/null || true)
+if [ "${PIN_THREADS_COUNT}" = "1" ]; then
+    THREAD_SETUP_SQL="SET pin_threads = 'off'; SET threads = 1; SET threads = ${NUM_THREADS};"
+fi
+
+echo "Experiment threads: ${NUM_THREADS}"
+echo "Experiment CPU list: ${CPU_LIST} (${AVAILABLE_CPU_COUNT} available CPUs)"
 
 # Suffix function
 function FileSuffix() {
@@ -126,25 +170,31 @@ do
                 
                 if [[ $is_multi_statement -eq 1 ]]; then
                     # Multi-statement execution: setup + timed execution
-                    timeout -s SIGKILL 2h ${DUCKDB_BIN} \
-                        -c ".open ${DATABASE}_db" \
-                        -c "SET threads TO ${NUM_THREADS};" \
-                        -c ".timer off" \
-                        -c ".read ${SUBMIT_QUERY_1}" \
-                        -c ".read ${SUBMIT_QUERY_2}" \
-                        -c ".timer on" \
-                        -c ".read ${SUBMIT_QUERY_2}" \
-                        2>&1 | tee -a "${LOG_FILE}" | tail -n 1 | awk '{print $5}' >> "${TIME_FILE}"
+                    if ! timeout -s SIGKILL 2h taskset --cpu-list "${CPU_LIST}" "${DUCKDB_BIN}" \
+                            -c ".open ${DATABASE}_db" \
+                            -c "${THREAD_SETUP_SQL}" \
+                            -c ".timer off" \
+                            -c ".read ${SUBMIT_QUERY_1}" \
+                            -c ".read ${SUBMIT_QUERY_2}" \
+                            -c ".timer on" \
+                            -c ".read ${SUBMIT_QUERY_2}" \
+                            2>&1 | tee -a "${LOG_FILE}" | tail -n 1 | awk '{print $5}' >> "${TIME_FILE}"; then
+                        echo "Error: DuckDB experiment failed for ${QUERY}." >&2
+                        exit 1
+                    fi
                 else
                     # Single statement execution
-                    timeout -s SIGKILL 2h ${DUCKDB_BIN} \
-                        -c ".open ${DATABASE}_db" \
-                        -c "SET threads TO ${NUM_THREADS};" \
-                        -c ".timer off" \
-                        -c ".read ${SUBMIT_QUERY_1}" \
-                        -c ".timer on" \
-                        -c ".read ${SUBMIT_QUERY_1}" \
-                        2>&1 | tee -a "${LOG_FILE}" | tail -n 1 | awk '{print $5}' >> "${TIME_FILE}"
+                    if ! timeout -s SIGKILL 2h taskset --cpu-list "${CPU_LIST}" "${DUCKDB_BIN}" \
+                            -c ".open ${DATABASE}_db" \
+                            -c "${THREAD_SETUP_SQL}" \
+                            -c ".timer off" \
+                            -c ".read ${SUBMIT_QUERY_1}" \
+                            -c ".timer on" \
+                            -c ".read ${SUBMIT_QUERY_1}" \
+                            2>&1 | tee -a "${LOG_FILE}" | tail -n 1 | awk '{print $5}' >> "${TIME_FILE}"; then
+                        echo "Error: DuckDB experiment failed for ${QUERY}." >&2
+                        exit 1
+                    fi
                 fi
             done
             
@@ -163,14 +213,17 @@ do
             for ((current_task=1; current_task<=5; current_task++)); 
             do
                 echo "Current Task: ${current_task}"
-                timeout -s SIGKILL 2h ${DUCKDB_BIN} \
-                    -c ".open ${DATABASE}_db" \
-                    -c "SET threads TO ${NUM_THREADS};" \
-                    -c ".timer off" \
-                    -c ".read ${SUBMIT_QUERY}" \
-                    -c ".timer on" \
-                    -c ".read ${SUBMIT_QUERY}" \
-                    2>&1 | tee -a "${LOG_FILE}" | tail -n 1 | awk '{print $5}' >> "${TIME_FILE}"
+                if ! timeout -s SIGKILL 2h taskset --cpu-list "${CPU_LIST}" "${DUCKDB_BIN}" \
+                        -c ".open ${DATABASE}_db" \
+                        -c "${THREAD_SETUP_SQL}" \
+                        -c ".timer off" \
+                        -c ".read ${SUBMIT_QUERY}" \
+                        -c ".timer on" \
+                        -c ".read ${SUBMIT_QUERY}" \
+                        2>&1 | tee -a "${LOG_FILE}" | tail -n 1 | awk '{print $5}' >> "${TIME_FILE}"; then
+                    echo "Error: DuckDB experiment failed for ${QUERY}." >&2
+                    exit 1
+                fi
             done
             
             # Cleanup single file

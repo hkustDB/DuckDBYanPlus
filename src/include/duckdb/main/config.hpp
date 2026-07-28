@@ -107,7 +107,7 @@ struct DBConfigOptions {
 	idx_t maximum_memory = DConstants::INVALID_INDEX;
 	//! The maximum size of the 'temp_directory' folder when set (in bytes). Default: 90% of available disk space.
 	idx_t maximum_swap_space = DConstants::INVALID_INDEX;
-	//! The maximum amount of CPU threads used by the database system. Default: all available.
+	//! The maximum amount of CPU threads used by the database system. Default: up to 64 available threads.
 	idx_t maximum_threads = DConstants::INVALID_INDEX;
 	//! Whether or not to create and use a temporary directory to store intermediates that do not fit in memory
 	bool use_temporary_directory = true;
@@ -286,6 +286,7 @@ public:
 	DUCKDB_API CollationBinding &GetCollationBinding();
 	DUCKDB_API IndexTypeSet &GetIndexTypes();
 	static idx_t GetSystemMaxThreads(FileSystem &fs);
+	static idx_t GetDefaultMaxThreads(FileSystem &fs);
 	static idx_t GetSystemAvailableMemory(FileSystem &fs);
 	static optional_idx ParseMemoryLimitSlurm(const string &arg);
 	void SetDefaultMaxMemory();

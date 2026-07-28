@@ -207,7 +207,7 @@ void print_help() {
 	fprintf(stderr, "              --profile              Prints the query profile information\n");
 	fprintf(stderr, "              --detailed-profile     Prints detailed query profile information\n");
 	fprintf(stderr, "              --threads=n            Sets the amount of threads to use during execution (default: "
-	                "hardware concurrency)\n");
+	                "up to 64 hardware threads)\n");
 	fprintf(stderr, "              --memory_limit=n       Sets the memory limit to use during execution (default: 0.8 "
 	                "* system memory)\n");
 	fprintf(stderr, "              --out=[file]           Move benchmark output to file\n");
@@ -408,6 +408,7 @@ void print_error_message(const ConfigurationError &error) {
 
 int main(int argc, char **argv) {
 	duckdb::unique_ptr<FileSystem> fs = FileSystem::CreateLocal();
+	BenchmarkRunner::GetInstance().threads = static_cast<uint32_t>(DBConfig::GetDefaultMaxThreads(*fs));
 	// Set the working directory. We need to scan this before loading the benchmarks or parsing the other arguments
 	string root_dir = parse_root_dir_or_default(argc, argv, *fs);
 	FileSystem::SetWorkingDirectory(root_dir);

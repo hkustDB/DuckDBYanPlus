@@ -587,6 +587,11 @@ idx_t DBConfig::GetSystemMaxThreads(FileSystem &fs) {
 #endif
 }
 
+idx_t DBConfig::GetDefaultMaxThreads(FileSystem &fs) {
+	static constexpr idx_t DEFAULT_MAX_THREADS = 64;
+	return MinValue<idx_t>(GetSystemMaxThreads(fs), DEFAULT_MAX_THREADS);
+}
+
 idx_t DBConfig::GetSystemAvailableMemory(FileSystem &fs) {
 	// System memory detection
 	auto memory = FileSystem::GetAvailableMemory();

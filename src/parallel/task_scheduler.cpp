@@ -504,8 +504,35 @@ void TaskScheduler::RelaunchThreads() {
 }
 
 #ifndef DUCKDB_NO_THREADS
-static void SetThreadAffinity(thread &thread, const int &cpu_id) {
+static void SetThreadAffinity(thread &thread, const int &thread_id) {
 #if defined(__GLIBC__)
+	// Respect an inherited non-contiguous affinity mask (for example one set by
+	// taskset) instead of treating the worker index as a global CPU ID.
+	cpu_set_t allowed_cpus;
+	CPU_ZERO(&allowed_cpus);
+	if (sched_getaffinity(0, sizeof(cpu_set_t), &allowed_cpus) != 0) {
+		return;
+	}
+	const auto allowed_cpu_count = CPU_COUNT(&allowed_cpus);
+	if (allowed_cpu_count == 0) {
+		return;
+	}
+	auto allowed_cpu_index = thread_id % allowed_cpu_count;
+	int cpu_id = -1;
+	for (int candidate = 0; candidate < CPU_SETSIZE; candidate++) {
+		if (!CPU_ISSET(candidate, &allowed_cpus)) {
+			continue;
+		}
+		if (allowed_cpu_index == 0) {
+			cpu_id = candidate;
+			break;
+		}
+		allowed_cpu_index--;
+	}
+	if (cpu_id < 0) {
+		return;
+	}
+
 	cpu_set_t cpuset;
 	CPU_ZERO(&cpuset);
 	CPU_SET(cpu_id, &cpuset);

@@ -1613,7 +1613,7 @@ void ThreadsSetting::SetGlobal(DatabaseInstance *db, DBConfig &config, const Val
 }
 
 void ThreadsSetting::ResetGlobal(DatabaseInstance *db, DBConfig &config) {
-	idx_t new_maximum_threads = config.GetSystemMaxThreads(*config.file_system);
+	idx_t new_maximum_threads = config.GetDefaultMaxThreads(*config.file_system);
 	if (db) {
 		TaskScheduler::GetScheduler(*db).SetThreads(new_maximum_threads, Settings::Get<ExternalThreadsSetting>(config));
 	}

@@ -57,12 +57,14 @@ TEST_CASE("Test deadlock issue between NumberOfThreads and RelaunchThreads", "[a
 }
 
 TEST_CASE("Test database maximum_threads argument", "[api]") {
-	// default is number of hw threads
-	// FIXME: not yet
+	// The default uses the available hardware up to the Yan+ experiment limit.
 	{
 		DuckDB db(nullptr);
 		auto file_system = make_uniq<VirtualFileSystem>();
-		REQUIRE(db.NumberOfThreads() == DBConfig().GetSystemMaxThreads(*file_system));
+		auto default_threads = DBConfig().GetDefaultMaxThreads(*file_system);
+		REQUIRE(default_threads >= 1);
+		REQUIRE(default_threads <= 64);
+		REQUIRE(db.NumberOfThreads() == default_threads);
 	}
 	// but we can set another value
 	{
@@ -115,8 +117,8 @@ TEST_CASE("Test external threads", "[api]") {
 
 	con.Query("RESET threads");
 	auto file_system = make_uniq<VirtualFileSystem>();
-	REQUIRE(config.options.maximum_threads == DBConfig().GetSystemMaxThreads(*file_system));
-	REQUIRE(db.NumberOfThreads() == DBConfig().GetSystemMaxThreads(*file_system));
+	REQUIRE(config.options.maximum_threads == DBConfig().GetDefaultMaxThreads(*file_system));
+	REQUIRE(db.NumberOfThreads() == DBConfig().GetDefaultMaxThreads(*file_system));
 }
 
 #ifdef DUCKDB_NO_THREADS

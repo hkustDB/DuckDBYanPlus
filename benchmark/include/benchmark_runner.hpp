@@ -14,7 +14,6 @@
 #include "benchmark.hpp"
 #include "duckdb/common/constants.hpp"
 #include "duckdb/common/fstream.hpp"
-#include <thread>
 
 namespace duckdb {
 class DuckDB;
@@ -50,7 +49,7 @@ public:
 	vector<Benchmark *> benchmarks;
 	ofstream out_file;
 	ofstream log_file;
-	uint32_t threads = MaxValue<uint32_t>(std::thread::hardware_concurrency(), 1u);
+	uint32_t threads = 1;
 	string memory_limit;
 	unordered_map<string, string> custom_arguments;
 };

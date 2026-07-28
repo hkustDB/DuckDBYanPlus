@@ -457,7 +457,7 @@ void DatabaseInstance::Configure(DBConfig &new_config, const char *database_path
 		config.SetDefaultMaxMemory();
 	}
 	if (new_config.options.maximum_threads == DConstants::INVALID_INDEX) {
-		config.options.maximum_threads = config.GetSystemMaxThreads(*config.file_system);
+		config.options.maximum_threads = config.GetDefaultMaxThreads(*config.file_system);
 	}
 	config.allocator = std::move(new_config.allocator);
 	if (!config.allocator) {

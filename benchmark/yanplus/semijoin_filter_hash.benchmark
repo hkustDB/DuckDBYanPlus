@@ -7,7 +7,6 @@ group yanplus
 subgroup semijoin_filter
 
 load
-SET threads = 4;
 SET yanplus_enable = true;
 SET yanplus_cyclic_bags = true;
 SET yanplus_semijoin_filter = 'hash';
