@@ -106,7 +106,7 @@ BUILD_BENCHMARK=1 make # Build with benchmark support
 For the origin-versus-Yan+ experiment, build two independent CMake caches:
 
 ```sh
-./build_duckdb_variants.sh
+./build_duckdb.sh
 ```
 
 This produces:
@@ -118,7 +118,7 @@ This produces:
   enabled and its semi-join filter defaults to `BLOOM`.
 
 Common CMake options can be passed once and are applied to both builds, for
-example `./build_duckdb_variants.sh -DNATIVE_ARCH=ON`. Set `BUILD_JOBS` to
+example `./build_duckdb.sh -DNATIVE_ARCH=ON`. Set `BUILD_JOBS` to
 control compilation parallelism. Use `YANPLUS_FRESH_BUILD=1` after changing
 toolchains or options so neither dedicated cache retains stale configuration.
 Both executables report `v1.5.0-yanplus`; override this only when needed with

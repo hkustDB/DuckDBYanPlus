@@ -12,7 +12,7 @@ Examples:
   $0 lsqb lsqb yanplus 64 0-15,24-71 5
 
 A bare database name such as "lsqb" resolves to <repository>/lsqb_db.
-The two default executables are produced by ./build_duckdb_variants.sh.
+The two default executables are produced by ./build_duckdb.sh.
 EOF
 }
 
@@ -84,7 +84,7 @@ if ! [[ "${REPETITIONS}" =~ ^[1-9][0-9]*$ ]]; then
 fi
 if [[ ! -x "${DUCKDB_BIN}" ]]; then
     echo "Error: ${VARIANT} executable not found or not executable: ${DUCKDB_BIN}" >&2
-    echo "Run ./build_duckdb_variants.sh first, or set the matching DUCKDB_*_BIN variable." >&2
+    echo "Run ./build_duckdb.sh first, or set the matching DUCKDB_*_BIN variable." >&2
     exit 1
 fi
 if [[ ! -f "${DATABASE_PATH}" ]]; then
