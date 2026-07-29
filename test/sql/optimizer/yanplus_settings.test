@@ -2,6 +2,8 @@
 # description: Yan+ feature and semi-join backend settings
 # group: [optimizer]
 
+require yanplus
+
 query TTT
 SELECT current_setting('yanplus_enable'), current_setting('yanplus_cyclic_bags'),
        current_setting('yanplus_semijoin_filter');

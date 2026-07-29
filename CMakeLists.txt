@@ -413,6 +413,12 @@ message(STATUS "git hash ${GIT_COMMIT_HASH}, version ${DUCKDB_VERSION}, extensio
 option(BUILD_MAIN_DUCKDB_LIBRARY
         "Build the main duckdb library and executable."
         TRUE)
+option(ENABLE_YANPLUS
+       "Compile the Yan+ optimizer integration."
+       ON)
+if(ENABLE_YANPLUS)
+  add_definitions(-DDUCKDB_YANPLUS)
+endif()
 option(EXTENSION_STATIC_BUILD
         "Extension build linking statically with DuckDB. Required for building linux loadable extensions."
         TRUE)
@@ -885,5 +891,4 @@ if(EXISTS ${CMAKE_CONFIG_TEMPLATE} AND EXISTS ${CMAKE_CONFIG_VERSION_TEMPLATE})
           "${PROJECT_BINARY_DIR}/DuckDBConfigVersion.cmake"
     DESTINATION "${INSTALL_CMAKE_DIR}")
 endif()
-
 

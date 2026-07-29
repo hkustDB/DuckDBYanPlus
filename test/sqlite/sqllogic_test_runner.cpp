@@ -474,6 +474,14 @@ RequireResult SQLLogicTestRunner::CheckRequire(SQLLogicParser &parser, const vec
 #endif
 	}
 
+	if (param == "yanplus") {
+#ifdef DUCKDB_YANPLUS
+		return RequireResult::PRESENT;
+#else
+		return RequireResult::MISSING;
+#endif
+	}
+
 	if (param == "ram") {
 		if (params.size() != 2) {
 			parser.Fail("require ram requires a parameter");

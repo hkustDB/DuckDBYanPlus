@@ -75,6 +75,15 @@ m4/lt~obsolete.m4
 #m4/
 build/
 duckdb_benchmark_data/
+/graph_db
+/lsqb_db
+/dsb_db
+/tpch_db
+/job_db
+/*/log_*_origin.txt
+/*/log_*_yanplus.txt
+/*/time_*_origin.txt
+/*/time_*_yanplus.txt
 #*.m4
 *.o
 *.lo

@@ -3,7 +3,9 @@
 #include "duckdb/catalog/catalog_entry/scalar_function_catalog_entry.hpp"
 #include "duckdb/common/types/column/column_data_collection.hpp"
 #include "duckdb/execution/column_binding_resolver.hpp"
+#ifdef DUCKDB_YANPLUS
 #include "duckdb/execution/transfer_bf_linker.hpp"
+#endif
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/config.hpp"
 #include "duckdb/main/query_profiler.hpp"
@@ -33,8 +35,10 @@ PhysicalOperator &PhysicalPlanGenerator::ResolveAndPlan(unique_ptr<LogicalOperat
 	// Reconnect CREATE_BF and USE_BF operators after plan copies/serialization.
 	// The linker can compact and remove logical operators, so it must run before
 	// resolving types and column bindings for the final physical plan.
+#ifdef DUCKDB_YANPLUS
 	TransferBFLinker linker;
 	linker.LinkBFOperators(*op);
+#endif
 
 	// Resolve the types of each operator.
 	profiler.StartPhase(MetricType::PHYSICAL_PLANNER_RESOLVE_TYPES);
@@ -180,9 +184,17 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalOperator &op) {
 	case LogicalOperatorType::LOGICAL_UPDATE_EXTENSIONS:
 		return CreatePlan(op.Cast<LogicalSimple>());
 	case LogicalOperatorType::LOGICAL_CREATE_BF:
+#ifdef DUCKDB_YANPLUS
 		return CreatePlan(op.Cast<LogicalCreateBF>());
+#else
+		throw InternalException("Yan+ CREATE_BF encountered in a build with ENABLE_YANPLUS=OFF");
+#endif
 	case LogicalOperatorType::LOGICAL_USE_BF:
+#ifdef DUCKDB_YANPLUS
 		return CreatePlan(op.Cast<LogicalUseBF>());
+#else
+		throw InternalException("Yan+ USE_BF encountered in a build with ENABLE_YANPLUS=OFF");
+#endif
 	case LogicalOperatorType::LOGICAL_EXTENSION_OPERATOR: {
 		auto &extension_op = op.Cast<LogicalExtensionOperator>();
 		return extension_op.CreatePlan(context, *this);

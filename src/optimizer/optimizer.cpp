@@ -21,8 +21,10 @@
 #include "duckdb/optimizer/join_elimination.hpp"
 #include "duckdb/optimizer/join_filter_pushdown_optimizer.hpp"
 #include "duckdb/optimizer/join_order/join_order_optimizer.hpp"
+#ifdef DUCKDB_YANPLUS
 #include "duckdb/optimizer/predicate_transfer/predicate_transfer_optimizer.hpp"
 #include "duckdb/optimizer/aggregation_pushdown.hpp"
+#endif
 #include "duckdb/optimizer/limit_pushdown.hpp"
 #include "duckdb/optimizer/regex_range_filter.hpp"
 #include "duckdb/optimizer/remove_duplicate_groups.hpp"
@@ -44,13 +46,16 @@
 #include "duckdb/optimizer/window_self_join.hpp"
 #include "duckdb/optimizer/optimizer_extension.hpp"
 #include "duckdb/planner/binder.hpp"
+#ifdef DUCKDB_YANPLUS
 #include "duckdb/planner/expression/bound_aggregate_expression.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/operator/logical_comparison_join.hpp"
+#endif
 #include "duckdb/planner/planner.hpp"
 
 namespace duckdb {
 
+#ifdef DUCKDB_YANPLUS
 static bool HasSemiJoinFilterOperator(const LogicalOperator &op) {
 	if (op.type == LogicalOperatorType::LOGICAL_CREATE_BF || op.type == LogicalOperatorType::LOGICAL_USE_BF) {
 		return true;
@@ -164,6 +169,7 @@ static LogicalOperator *GetYanplusQueryBody(LogicalOperator *op) {
 	}
 	return op;
 }
+#endif
 
 Optimizer::Optimizer(Binder &binder, ClientContext &context) : context(context), binder(binder), rewriter(context) {
 	rewriter.rules.push_back(make_uniq<ConstantOrderNormalizationRule>(rewriter));
@@ -312,9 +318,11 @@ void Optimizer::RunBuiltInOptimizers() {
 		plan = empty_result_pullup.Optimize(std::move(plan));
 	});
 
+#ifdef DUCKDB_YANPLUS
 	// Remember the pre-rewrite shape: a supported-looking self-join produced
 	// from a window is still outside the Yan+ relation model.
 	auto yanplus_had_window = ContainsLogicalOperator(*plan, LogicalOperatorType::LOGICAL_WINDOW);
+#endif
 
 	// Replaces some window computations with self-joins
 	RunOptimizer(OptimizerType::WINDOW_SELF_JOIN, [&]() {
@@ -322,6 +330,7 @@ void Optimizer::RunBuiltInOptimizers() {
 		plan = window_self_join_optimizer.Optimize(std::move(plan));
 	});
 
+#ifdef DUCKDB_YANPLUS
 	// Then perform join ordering. Yan+ uses GYO for acyclic queries and a
 	// plan-derived two-bag GHD boundary for cyclic queries. Unsupported query
 	// shapes keep DuckDB's native v1.5 optimizer path.
@@ -436,6 +445,13 @@ void Optimizer::RunBuiltInOptimizers() {
 			plan = std::move(outer_operator);
 		}
 	}
+#else
+	// Compile-time origin mode: use DuckDB v1.5's native join-order path.
+	RunOptimizer(OptimizerType::JOIN_ORDER, [&]() {
+		JoinOrderOptimizer optimizer(context);
+		plan = optimizer.Optimize(std::move(plan));
+	});
+#endif
 
 	RunOptimizer(OptimizerType::JOIN_ELIMINATION, [&]() {
 		JoinElimination join_elimination;
@@ -583,6 +599,7 @@ unique_ptr<LogicalOperator> Optimizer::Optimize(unique_ptr<LogicalOperator> plan
 	return std::move(plan);
 }
 
+#ifdef DUCKDB_YANPLUS
 bool Optimizer::HasJoins(LogicalOperator *op) {
 	if (!op) {
 		return false;
@@ -692,6 +709,7 @@ int Optimizer::DetermineMaxHeight(LogicalOperator *op) {
 	               op->type == LogicalOperatorType::LOGICAL_CROSS_PRODUCT;
 	return child_height + (is_join ? 1 : 0);
 }
+#endif
 
 unique_ptr<Expression> Optimizer::BindScalarFunction(const string &name, unique_ptr<Expression> c1) {
 	vector<unique_ptr<Expression>> children;

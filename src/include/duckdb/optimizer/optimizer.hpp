@@ -12,7 +12,10 @@
 #include "duckdb/planner/logical_operator.hpp"
 #include "duckdb/planner/logical_operator_visitor.hpp"
 #include "duckdb/common/enums/optimizer_type.hpp"
+
+#ifdef DUCKDB_YANPLUS
 #include "duckdb/optimizer/aggregation_pushdown.hpp"
+#endif
 
 #include <functional>
 
@@ -41,11 +44,12 @@ private:
 	void RunOptimizer(OptimizerType type, const std::function<void()> &callback);
 	void Verify(LogicalOperator &op);
 
+#ifdef DUCKDB_YANPLUS
 	bool HasJoins(LogicalOperator* op);
 	QueryType DetectQueryType(LogicalOperator* op);
 	bool IsYanplusEligible(LogicalOperator *op, QueryType query_type);
 	int DetermineMaxHeight(LogicalOperator* op);
-	void PrintOperatorBindings(LogicalOperator* op, const string& prefix = "");
+#endif
 
 public:
 	// helper functions

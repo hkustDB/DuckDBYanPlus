@@ -2,6 +2,8 @@
 # description: Yan+ aggregation pushdown preserves DuckDB v1.5 types and join multiplicities
 # group: [optimizer]
 
+require yanplus
+
 statement ok
 CREATE TABLE yan_agg_a(id INTEGER, x INTEGER)
 

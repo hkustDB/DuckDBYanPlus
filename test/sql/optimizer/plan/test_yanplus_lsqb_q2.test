@@ -2,6 +2,8 @@
 # description: LSQB Q2 exercises the cyclic virtual-bag path with Bloom and Hash filters
 # group: [plan]
 
+require yanplus
+
 statement ok
 SET threads = 1
 

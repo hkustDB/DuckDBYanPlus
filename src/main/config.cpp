@@ -199,9 +199,11 @@ static const ConfigurationOption internal_options[] = {
     DUCKDB_SETTING(WalAutocheckpointEntriesSetting),
     DUCKDB_SETTING_CALLBACK(WarningsAsErrorsSetting),
     DUCKDB_SETTING(WriteBufferRowGroupCountSetting),
+#ifdef DUCKDB_YANPLUS
     DUCKDB_SETTING(YanplusCyclicBagsSetting),
     DUCKDB_SETTING(YanplusEnableSetting),
     DUCKDB_SETTING_CALLBACK(YanplusSemijoinFilterSetting),
+#endif
     DUCKDB_SETTING(ZstdMinStringLengthSetting),
     FINAL_SETTING};
 

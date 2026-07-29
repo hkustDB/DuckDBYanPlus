@@ -404,7 +404,9 @@ GenerateJoinRelation QueryGraphManager::GenerateJoins(vector<unique_ptr<LogicalO
 			}
 		}
 	}
+#ifdef DUCKDB_YANPLUS
 	InsertVirtualBagFilter(set, result_operator);
+#endif
 	auto result = GenerateJoinRelation(result_relation, std::move(result_operator));
 	return result;
 }

@@ -103,6 +103,34 @@ GEN=ninja make         # Use Ninja as backend
 BUILD_BENCHMARK=1 make # Build with benchmark support
 ```
 
+For the origin-versus-Yan+ experiment, build two independent CMake caches:
+
+```sh
+./build_duckdb_variants.sh
+```
+
+This produces:
+
+- `build/duckdb_origin/duckdb`, compiled with `ENABLE_YANPLUS=OFF`. The Yan+
+  settings and optimizer entry path are unavailable, so joins use DuckDB
+  v1.5's native optimizer path.
+- `build/duckdb_YanPlus/duckdb`, compiled with `ENABLE_YANPLUS=ON`. Yan+ is
+  enabled and its semi-join filter defaults to `BLOOM`.
+
+Common CMake options can be passed once and are applied to both builds, for
+example `./build_duckdb_variants.sh -DNATIVE_ARCH=ON`. Set `BUILD_JOBS` to
+control compilation parallelism. Use `YANPLUS_FRESH_BUILD=1` after changing
+toolchains or options so neither dedicated cache retains stale configuration.
+Both executables report `v1.5.0-yanplus`; override this only when needed with
+`DUCKDB_EXPERIMENT_VERSION`. Do not copy these generated executables to the
+tracked top-level `duckdb_origin` and `duckdb_YanPlus` paths.
+
+The compile-disabled origin is the CLI control build from this branch: normal
+SQL follows the native optimizer path and cannot enable Yan+, although dormant
+lower-level Yan+ implementation objects remain linked. It is therefore not a
+byte-for-byte build of the upstream v1.5.0 tag. Use the unmodified `v1.5.0` tag
+when a strict source-clean upstream binary is required.
+
 ## Baselines
 
 - **DuckDB v1.5.0**: [https://github.com/duckdb/duckdb/tree/v1.5.0](https://github.com/duckdb/duckdb/tree/v1.5.0)
@@ -131,11 +159,39 @@ python3 benchmark/yanplus/compare_semijoin_filters.py \
   --output benchmark/yanplus/results.csv
 ```
 
-For the query-suite launcher, the defaults are equivalent to:
+To run all committed Graph, LSQB, DSB, TPC-H, and JOB queries with both
+compiled variants:
 
 ```sh
-./auto_run.sh lsqb lsqb_test 3 64 0-15,24-71
+./batch_run.sh
 ```
+
+The database files default to the repository root and must be named
+`graph_db`, `lsqb_db`, `dsb_db`, `tpch_db`, and `job_db`. Override their
+directory with `YANPLUS_DATABASE_ROOT`. A smaller batch can name suites, for
+example:
+
+```sh
+YANPLUS_REPETITIONS=1 ./batch_run.sh lsqb tpch
+```
+
+The default run order is `origin yanplus`. For a second counterbalanced pass,
+use `YANPLUS_VARIANT_ORDER="yanplus origin"`; the selected order is printed in
+the batch metadata.
+
+For one suite and one variant, call the underlying launcher directly:
+
+```sh
+./auto_run.sh lsqb lsqb origin 64 0-15,24-71 5
+./auto_run.sh lsqb lsqb yanplus 64 0-15,24-71 5
+```
+
+Both variants receive the same taskset mask, thread count, warm-up, and timed
+repetitions. Results are written beside each query as
+`log_<query>_<variant>.txt` and `time_<query>_<variant>.txt`. The parameterized
+LSQB BI templates use documented, overridable defaults:
+`LSQB_COUNTRY=China`, `LSQB_TAG_CLASS=Song`,
+`LSQB_START_DATE=2012-08-29`, and `LSQB_END_DATE=2012-11-24`.
 
 `taskset` is Linux-only and the values are logical CPU IDs. Check the target
 host layout with `lscpu -e=CPU,CORE,SOCKET,NODE` before using this machine-specific
