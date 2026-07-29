@@ -7,12 +7,12 @@ tables and the same DuckDB v1.5 join plan. The only changed setting is
 The default machine policy is:
 
 - 64 DuckDB threads.
-- Logical CPUs `0-15,24-71` through Linux `taskset`.
-- Logical CPUs `16-23` excluded from the DuckDB processes.
+- Logical CPUs `0-63` through Linux `taskset`.
+- Logical CPUs `64-71` excluded from the DuckDB processes.
 
 DuckDB v1.5 automatically pins workers on hosts with more than 64 CPUs. This
-implementation maps that pinning onto the inherited non-contiguous affinity
-mask, so automatic startup pinning cannot select CPUs 16–23. The benchmark
+implementation maps that pinning onto the inherited affinity mask, so
+automatic startup pinning cannot select CPUs 64–71. The benchmark
 runner's `--threads` option is the single source of truth for its worker count.
 
 Build and run it from the repository root:
@@ -32,7 +32,7 @@ configuration, change both values together, for example:
 python3 benchmark/yanplus/compare_semijoin_filters.py \
   --runner build/release/benchmark/benchmark_runner \
   --threads 32 \
-  --cpu-list 0-15,24-39
+  --cpu-list 0-31
 ```
 
 The benchmark runner performs one warm-up and five measured executions for

@@ -147,8 +147,8 @@ The reproducible Bloom-versus-Hash experiment is documented in
 query and plan with only the semi-join-filter backend changed.
 
 On the 72-logical-CPU experiment host, all provided experiment launchers use
-64 DuckDB threads and Linux `taskset --cpu-list 0-15,24-71`. Thus logical CPUs
-16–23 are excluded. The query-suite launchers disable internal pinning and
+64 DuckDB threads and Linux `taskset --cpu-list 0-63`. Thus logical CPUs
+64–71 are excluded. The query-suite launchers disable internal pinning and
 rebuild the worker pool before timing. The v1.5 scheduler also maps automatic
 startup pinning onto the inherited allowed-CPU mask instead of global
 sequential CPU IDs, which keeps the benchmark runner inside the same mask.
@@ -214,9 +214,9 @@ enabled suite.
 For one suite and one variant, call the underlying launcher directly:
 
 ```sh
-./auto_run.sh lsqb lsqb origin 64 0-15,24-71 5
-./auto_run.sh lsqb lsqb yanplus 64 0-15,24-71 5
-./auto_run.sh dsb dsb_agg_rewrite rewriter 64 0-15,24-71 5
+./auto_run.sh lsqb lsqb origin 64 0-63 5
+./auto_run.sh lsqb lsqb yanplus 64 0-63 5
+./auto_run.sh dsb dsb_agg_rewrite rewriter 64 0-63 5
 ```
 
 All modes receive the same taskset mask, thread count, warm-up, and timed
