@@ -82,8 +82,10 @@ duckdb_benchmark_data/
 /job_db
 /*/log_*_origin.txt
 /*/log_*_yanplus.txt
+/*/log_*_rewriter.txt
 /*/time_*_origin.txt
 /*/time_*_yanplus.txt
+/*/time_*_rewriter.txt
 #*.m4
 *.o
 *.lo

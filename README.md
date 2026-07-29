@@ -160,11 +160,19 @@ python3 benchmark/yanplus/compare_semijoin_filters.py \
 ```
 
 To run all committed Graph, LSQB, DSB, TPC-H, and JOB queries with both
-compiled variants:
+compiled variants, plus the committed DSB rewritten queries:
 
 ```sh
 ./batch_run.sh
 ```
+
+Rewriter is a SQL-query baseline, not a third DuckDB build. It runs the
+generated `*_rewrite` SQL with `build/duckdb_origin/duckdb`. Setup
+`CREATE VIEW` statements are made temporary and run outside the timed region;
+the final rewritten query receives the same warm-up and timed repetitions as
+origin and Yan+. The default rewriter selection is `dsb`, currently six
+`dsb_agg_rewrite` queries and five `dsb_spj_rewrite` queries. DSB SPJ query 99
+has no committed rewrite, and there is no committed JOB rewrite suite.
 
 The database files default to the repository root and must be named
 `graph_db`, `lsqb_db`, `dsb_db`, `tpch_db`, and `job_db`. Override their
@@ -175,18 +183,43 @@ example:
 YANPLUS_REPETITIONS=1 ./batch_run.sh lsqb tpch
 ```
 
+Select or skip rewriter benchmarks independently:
+
+```sh
+# Disable all rewritten-query runs.
+./batch_run.sh --no-rewriter
+
+# Start with DSB, but skip its SPJ rewrite benchmark.
+./batch_run.sh --rewriter=dsb --skip-rewriter=dsb_spj
+
+# Opt in to every committed rewrite artifact.
+./batch_run.sh --rewriter=all
+```
+
+`--rewriter` accepts `none`, `all`, `dsb`, or a comma-separated combination of
+`graph`, `lsqb`, `dsb_agg`, `dsb_spj`, and `tpch`. `--skip-rewriter` removes
+suites from that selection. The equivalent environment controls are
+`YANPLUS_REWRITER_SUITES` and `YANPLUS_REWRITER_SKIP`, using space-separated
+values. Command-line options override them. Rewriter runs only for suites also
+selected on the `batch_run.sh` command line. Non-DSB rewrite directories are
+opt-in research artifacts; some contain alternative decompositions or depend
+on externally created views. The runner executes them verbatim and stops
+loudly on invalid SQL or a missing dependency.
+
 The default run order is `origin yanplus`. For a second counterbalanced pass,
 use `YANPLUS_VARIANT_ORDER="yanplus origin"`; the selected order is printed in
-the batch metadata.
+the batch metadata. Rewriter runs after those compiled variants for each
+enabled suite.
 
 For one suite and one variant, call the underlying launcher directly:
 
 ```sh
 ./auto_run.sh lsqb lsqb origin 64 0-15,24-71 5
 ./auto_run.sh lsqb lsqb yanplus 64 0-15,24-71 5
+./auto_run.sh dsb dsb_agg_rewrite rewriter 64 0-15,24-71 5
 ```
 
-Both variants receive the same taskset mask, thread count, warm-up, and timed
+All modes receive the same taskset mask, thread count, warm-up, and timed
 repetitions. Results are written beside each query as
 `log_<query>_<variant>.txt` and `time_<query>_<variant>.txt`. The parameterized
 LSQB BI templates use documented, overridable defaults:

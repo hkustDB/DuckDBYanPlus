@@ -1,36 +1,21 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
-trap 'echo "Interrupted"; kill 0; exit 130' INT
+set -euo pipefail
 
-# Graph test
-# echo "Starting Graph original"
-# ./auto_run.sh graph graph_test 1
-# echo "Starting Graph RPT"
-# ./auto_run.sh graph graph_test 2
-# echo "Starting Graph Yan+"
-# ./auto_run.sh graph graph_test 3
+SCRIPT_PATH=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+AUTO_RUN="${SCRIPT_PATH}/auto_run.sh"
 
 # echo "Starting graph rewrite"
-# ./auto_run.sh graph graph_rewrite_test 6
+# "${AUTO_RUN}" graph graph_rewrite rewriter
 
 echo "Starting dsb-agg rewrite"
-./auto_run.sh dsb dsb_agg_rewrite 6
+"${AUTO_RUN}" dsb dsb_agg_rewrite rewriter
 
 echo "Starting dsb-spj rewrite"
-./auto_run.sh dsb dsb_spj_rewrite 6
+"${AUTO_RUN}" dsb dsb_spj_rewrite rewriter
 
 # echo "Starting tpch rewrite"
-# ./auto_run.sh tpch tpch_rewrite_test 6
-
-# echo "Starting job rewrite"
-# ./auto_run.sh job job_agg_rewrite_test 6
-
-# echo "Starting LSQB original"
-# ./auto_run.sh lsqb lsqb_test 1
-# echo "Starting LSQB RPT"
-# ./auto_run.sh lsqb lsqb_test 2
-# echo "Starting LSQB Yan+"
-# ./auto_run.sh lsqb lsqb_test 3
+# "${AUTO_RUN}" tpch tpch_rewrite rewriter
 
 # echo "Starting lsqb rewrite"
-# ./auto_run.sh lsqb lsqb_rewrite_test 6
+# "${AUTO_RUN}" lsqb lsqb_rewrite rewriter
