@@ -9,8 +9,8 @@ Usage: $0 <database> <query_dir> <origin|yanplus|rewriter> [threads] [cpu_list] 
 
 Examples:
   $0 lsqb lsqb origin
-  $0 lsqb lsqb yanplus 64 0-63 5
-  $0 dsb dsb_agg_rewrite rewriter 64 0-63 5
+  $0 lsqb lsqb yanplus 64 0-63 3
+  $0 dsb dsb_agg_rewrite rewriter 64 0-63 3
 
 A bare database name such as "lsqb" resolves to <repository>/lsqb_db.
 The two default executables are produced by ./build_duckdb.sh.

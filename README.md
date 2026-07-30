@@ -245,15 +245,15 @@ enabled suite.
 For one suite and one variant, call the underlying launcher directly:
 
 ```sh
-./auto_run.sh lsqb lsqb origin 64 0-63 5
-./auto_run.sh lsqb lsqb yanplus 64 0-63 5
-./auto_run.sh dsb dsb_agg_rewrite rewriter 64 0-63 5
+./auto_run.sh lsqb lsqb origin 64 0-63 3
+./auto_run.sh lsqb lsqb yanplus 64 0-63 3
+./auto_run.sh dsb dsb_agg_rewrite rewriter 64 0-63 3
 ```
 
 For a direct origin run, pass query basenames for that one query directory:
 
 ```sh
-YANPLUS_ORIGIN_SKIP_QUERIES=q4,q5,q7 ./auto_run.sh graph graph origin 64 0-63 5
+YANPLUS_ORIGIN_SKIP_QUERIES=q4,q5,q7 ./auto_run.sh graph graph origin 64 0-63 3
 YANPLUS_ORIGIN_SKIP='graph:q4,q5,q7 lsqb:q8,q9' ./batch_run.sh
 ```
 
