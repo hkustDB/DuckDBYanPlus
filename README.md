@@ -253,8 +253,8 @@ For one suite and one variant, call the underlying launcher directly:
 For a direct origin run, pass query basenames for that one query directory:
 
 ```sh
-YANPLUS_ORIGIN_SKIP_QUERIES=q4,q5,q7 \
-  ./auto_run.sh graph graph origin 64 0-63 5
+YANPLUS_ORIGIN_SKIP_QUERIES=q4,q5,q7 ./auto_run.sh graph graph origin 64 0-63 5
+YANPLUS_ORIGIN_SKIP='graph:q4,q5,q7 lsqb:q8,q9' ./batch_run.sh
 ```
 
 `YANPLUS_ORIGIN_SKIP_QUERIES` accepts comma- or space-separated names and
