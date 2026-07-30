@@ -109,6 +109,10 @@ For the origin-versus-Yan+ experiment, build two independent CMake caches:
 ./build_duckdb.sh
 ```
 
+The helper defaults to the `Unix Makefiles` generator, so Ninja is not
+required. To opt into Ninja, run
+`CMAKE_GENERATOR=Ninja ./build_duckdb.sh`.
+
 This produces:
 
 - `build/duckdb_origin/duckdb`, compiled with `ENABLE_YANPLUS=OFF`. The Yan+

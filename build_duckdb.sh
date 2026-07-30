@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_PATH=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 BUILD_TYPE=${BUILD_TYPE:-Release}
-CMAKE_GENERATOR_NAME=${CMAKE_GENERATOR:-Ninja}
+CMAKE_GENERATOR_NAME=${CMAKE_GENERATOR:-"Unix Makefiles"}
 DUCKDB_EXPERIMENT_VERSION=${DUCKDB_EXPERIMENT_VERSION:-v1.5.0-yanplus}
 YANPLUS_FRESH_BUILD=${YANPLUS_FRESH_BUILD:-0}
 
@@ -50,7 +50,7 @@ if ! command -v cmake >/dev/null 2>&1; then
     exit 1
 fi
 if [[ "${CMAKE_GENERATOR_NAME}" == Ninja ]] && ! command -v ninja >/dev/null 2>&1; then
-    echo "Error: Ninja is not installed. Set CMAKE_GENERATOR='Unix Makefiles' or install Ninja." >&2
+    echo "Error: Ninja is not installed. Install Ninja or omit CMAKE_GENERATOR to use Unix Makefiles." >&2
     exit 1
 fi
 if [[ "${CMAKE_GENERATOR_NAME}" == "Unix Makefiles" ]] && ! command -v make >/dev/null 2>&1; then
