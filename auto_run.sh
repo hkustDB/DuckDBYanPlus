@@ -16,6 +16,8 @@ A bare database name such as "lsqb" resolves to <repository>/lsqb_db.
 The two default executables are produced by ./build_duckdb.sh.
 The rewriter uses the origin executable and runs setup views outside the timed
 region before warming up and timing the final rewritten query.
+For a direct origin run, YANPLUS_ORIGIN_SKIP_QUERIES accepts comma- or
+space-separated query basenames, for example: q4,q5,q7.
 EOF
 }
 
@@ -155,10 +157,92 @@ DUCKDB_VERSION=$(taskset --cpu-list "${CPU_LIST}" "${DUCKDB_BIN}" -csv -noheader
     -c "SELECT version();" 2>/dev/null | tr -d '\r')
 
 shopt -s nullglob
-QUERY_FILES=("${INPUT_DIR_PATH}"/*.sql)
-if ((${#QUERY_FILES[@]} == 0)); then
+ALL_QUERY_FILES=("${INPUT_DIR_PATH}"/*.sql)
+if ((${#ALL_QUERY_FILES[@]} == 0)); then
     echo "Error: no .sql queries found in ${INPUT_DIR_PATH}." >&2
     exit 1
+fi
+
+ORIGIN_SKIP_QUERY_SPEC=
+if [[ "${VARIANT}" == origin ]]; then
+    ORIGIN_SKIP_QUERY_SPEC=${YANPLUS_ORIGIN_SKIP_QUERIES:-}
+fi
+ORIGIN_SKIP_QUERY_SPEC=${ORIGIN_SKIP_QUERY_SPEC//,/ }
+if [[ "${ORIGIN_SKIP_QUERY_SPEC}" == none ]]; then
+    ORIGIN_SKIP_QUERY_SPEC=
+fi
+
+RAW_SKIP_QUERY_NAMES=()
+SKIP_QUERY_NAMES=()
+SKIPPED_QUERY_NAMES=()
+QUERY_FILES=()
+read -r -a RAW_SKIP_QUERY_NAMES <<<"${ORIGIN_SKIP_QUERY_SPEC}"
+
+if ((${#RAW_SKIP_QUERY_NAMES[@]} > 0)); then
+    for raw_skip_name in "${RAW_SKIP_QUERY_NAMES[@]}"; do
+        skip_name=${raw_skip_name%.sql}
+        if ! [[ "${skip_name}" =~ ^[A-Za-z0-9_.-]+$ ]]; then
+            echo "Error: invalid query basename in YANPLUS_ORIGIN_SKIP_QUERIES: '${raw_skip_name}'." >&2
+            exit 1
+        fi
+
+        duplicate_skip=0
+        if ((${#SKIP_QUERY_NAMES[@]} > 0)); then
+            for existing_skip_name in "${SKIP_QUERY_NAMES[@]}"; do
+                if [[ "${skip_name}" == "${existing_skip_name}" ]]; then
+                    duplicate_skip=1
+                    break
+                fi
+            done
+        fi
+        if ((duplicate_skip == 0)); then
+            SKIP_QUERY_NAMES+=("${skip_name}")
+        fi
+    done
+fi
+
+if ((${#SKIP_QUERY_NAMES[@]} > 0)); then
+    for skip_name in "${SKIP_QUERY_NAMES[@]}"; do
+        skip_exists=0
+        for query_file in "${ALL_QUERY_FILES[@]}"; do
+            if [[ $(basename -- "${query_file}" .sql) == "${skip_name}" ]]; then
+                skip_exists=1
+                break
+            fi
+        done
+        if ((skip_exists == 0)); then
+            echo "Error: origin skip query '${skip_name}' does not exist in ${INPUT_DIR_PATH}." >&2
+            exit 1
+        fi
+    done
+fi
+
+for query_file in "${ALL_QUERY_FILES[@]}"; do
+    query_name=$(basename -- "${query_file}" .sql)
+    should_skip=0
+    if ((${#SKIP_QUERY_NAMES[@]} > 0)); then
+        for skip_name in "${SKIP_QUERY_NAMES[@]}"; do
+            if [[ "${query_name}" == "${skip_name}" ]]; then
+                should_skip=1
+                break
+            fi
+        done
+    fi
+    if ((should_skip != 0)); then
+        SKIPPED_QUERY_NAMES+=("${query_name}")
+        # Prevent an older result from being mistaken for this skipped run.
+        rm -f -- "${INPUT_DIR_PATH}/log_${query_name}_${VARIANT}.txt" \
+            "${INPUT_DIR_PATH}/time_${query_name}_${VARIANT}.txt"
+    else
+        QUERY_FILES+=("${query_file}")
+    fi
+done
+
+if ((${#QUERY_FILES[@]} == 0)); then
+    echo "Variant: ${VARIANT}"
+    echo "Queries: ${INPUT_DIR_PATH} (0 runnable, ${#SKIPPED_QUERY_NAMES[@]} skipped)"
+    echo "All queries were skipped; nothing to run."
+    exit 0
 fi
 
 # The committed LSQB BI templates contain named placeholders. These defaults
@@ -385,7 +469,10 @@ trap 'exit 143' TERM
 echo "Variant: ${VARIANT}"
 echo "DuckDB: ${DUCKDB_BIN} (${DUCKDB_VERSION})"
 echo "Database: ${DATABASE_PATH}"
-echo "Queries: ${INPUT_DIR_PATH} (${#QUERY_FILES[@]} files)"
+echo "Queries: ${INPUT_DIR_PATH} (${#QUERY_FILES[@]} runnable, ${#SKIPPED_QUERY_NAMES[@]} skipped)"
+if ((${#SKIPPED_QUERY_NAMES[@]} > 0)); then
+    echo "Skipped origin queries: ${SKIPPED_QUERY_NAMES[*]}"
+fi
 echo "Experiment threads: ${NUM_THREADS}"
 echo "Experiment CPU list: ${CPU_LIST} (${AVAILABLE_CPU_COUNT} available CPUs)"
 echo "Measured repetitions: ${REPETITIONS} (one untimed warm-up per repetition)"

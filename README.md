@@ -159,12 +159,17 @@ python3 benchmark/yanplus/compare_semijoin_filters.py \
   --output benchmark/yanplus/results.csv
 ```
 
-To run all committed Graph, LSQB, DSB, TPC-H, and JOB queries with both
-compiled variants, plus the committed DSB rewritten queries:
+To run the committed Graph, LSQB, DSB, TPC-H, and JOB suites with both compiled
+variants, plus the committed DSB rewritten queries:
 
 ```sh
 ./batch_run.sh
 ```
+
+By default, Yan+ runs every selected query, while origin skips Graph
+`q4`, `q5`, and `q7`, plus LSQB `q8` and `q9`. These origin-only exclusions do
+not affect Yan+ or rewriter runs. The batch summary reports the runnable and
+skipped counts separately.
 
 Rewriter is a SQL-query baseline, not a third DuckDB build. It runs the
 generated `*_rewrite` SQL with `build/duckdb_origin/duckdb`. Setup
@@ -206,6 +211,28 @@ opt-in research artifacts; some contain alternative decompositions or depend
 on externally created views. The runner executes them verbatim and stops
 loudly on invalid SQL or a missing dependency.
 
+Override the origin-only skip list with one or more `--skip-origin` options:
+
+```sh
+# Use a custom origin-only skip list.
+./batch_run.sh --skip-origin=graph:q4,q5,q7 --skip-origin=lsqb:q8,q9
+
+# Disable origin skipping and run every selected query with both variants.
+./batch_run.sh --no-origin-skip
+```
+
+The first `--skip-origin` option replaces the defaults and later occurrences
+append to it. Query names are exact SQL filename stems. The equivalent
+environment setting uses space-separated suite groups:
+
+```sh
+YANPLUS_ORIGIN_SKIP='graph:q4,q5,q7 lsqb:q8,q9' ./batch_run.sh
+```
+
+Set `YANPLUS_ORIGIN_SKIP=none` to disable the defaults through the environment.
+Only skip entries belonging to selected suites are applied. Every active entry
+is validated before the batch starts.
+
 The default run order is `origin yanplus`. For a second counterbalanced pass,
 use `YANPLUS_VARIANT_ORDER="yanplus origin"`; the selected order is printed in
 the batch metadata. Rewriter runs after those compiled variants for each
@@ -218,6 +245,18 @@ For one suite and one variant, call the underlying launcher directly:
 ./auto_run.sh lsqb lsqb yanplus 64 0-63 5
 ./auto_run.sh dsb dsb_agg_rewrite rewriter 64 0-63 5
 ```
+
+For a direct origin run, pass query basenames for that one query directory:
+
+```sh
+YANPLUS_ORIGIN_SKIP_QUERIES=q4,q5,q7 \
+  ./auto_run.sh graph graph origin 64 0-63 5
+```
+
+`YANPLUS_ORIGIN_SKIP_QUERIES` accepts comma- or space-separated names and
+is ignored for Yan+ and rewriter. When an origin query is skipped, its exact
+`log_<query>_origin.txt` and `time_<query>_origin.txt` files are removed so an
+older result cannot be mistaken for a result from the current batch.
 
 All modes receive the same taskset mask, thread count, warm-up, and timed
 repetitions. Results are written beside each query as

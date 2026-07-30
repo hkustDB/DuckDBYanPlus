@@ -12,6 +12,8 @@ REPETITIONS=${YANPLUS_REPETITIONS:-5}
 VARIANT_ORDER=${YANPLUS_VARIANT_ORDER:-"origin yanplus"}
 REWRITER_SELECTION=${YANPLUS_REWRITER_SUITES:-dsb}
 REWRITER_SKIP_SELECTION=${YANPLUS_REWRITER_SKIP:-}
+ORIGIN_SKIP_SELECTION=${YANPLUS_ORIGIN_SKIP:-"graph:q4,q5,q7 lsqb:q8,q9"}
+ORIGIN_SKIP_CLI_SET=0
 
 if [[ ! -d "${DATABASE_ROOT}" ]]; then
     echo "Error: database root does not exist: ${DATABASE_ROOT}" >&2
@@ -35,6 +37,7 @@ esac
 ALL_SUITES=(graph lsqb dsb_agg dsb_spj tpch job)
 ALL_REWRITER_SUITES=(graph lsqb dsb_agg dsb_spj tpch)
 REWRITER_SUITES=()
+ORIGIN_SKIP_ENTRIES=()
 
 add_rewriter_suite() {
     local candidate=$1
@@ -169,6 +172,92 @@ suite_directory() {
     esac
 }
 
+add_origin_skip_entry() {
+    local candidate=$1
+    local existing
+    if ((${#ORIGIN_SKIP_ENTRIES[@]} > 0)); then
+        for existing in "${ORIGIN_SKIP_ENTRIES[@]}"; do
+            if [[ "${existing}" == "${candidate}" ]]; then
+                return
+            fi
+        done
+    fi
+    ORIGIN_SKIP_ENTRIES+=("${candidate}")
+}
+
+configure_origin_skips() {
+    local group
+    local groups=()
+    local suite
+    local query_list
+    local query_name
+    local query_names=()
+
+    ORIGIN_SKIP_SELECTION=${ORIGIN_SKIP_SELECTION//;/ }
+    read -r -a groups <<<"${ORIGIN_SKIP_SELECTION}"
+    if ((${#groups[@]} == 0)); then
+        return
+    fi
+    if [[ ${#groups[@]} -eq 1 && "${groups[0]}" == none ]]; then
+        return
+    fi
+
+    for group in "${groups[@]}"; do
+        if [[ "${group}" == none ]]; then
+            echo "Error: origin skip value 'none' cannot be combined with query groups." >&2
+            exit 1
+        fi
+        if [[ "${group}" != *:* ]]; then
+            echo "Error: origin skip group must use suite:query[,query], got '${group}'." >&2
+            exit 1
+        fi
+
+        suite=${group%%:*}
+        query_list=${group#*:}
+        if [[ -z "${suite}" || -z "${query_list}" ]]; then
+            echo "Error: origin skip group must include both suite and query names: '${group}'." >&2
+            exit 1
+        fi
+        if ! suite_directory "${suite}" >/dev/null; then
+            echo "Error: unknown suite in origin skip group: '${suite}'." >&2
+            exit 1
+        fi
+
+        query_list=${query_list//,/ }
+        query_names=()
+        read -r -a query_names <<<"${query_list}"
+        if ((${#query_names[@]} == 0)); then
+            echo "Error: no query names in origin skip group '${group}'." >&2
+            exit 1
+        fi
+        for query_name in "${query_names[@]}"; do
+            query_name=${query_name%.sql}
+            if ! [[ "${query_name}" =~ ^[A-Za-z0-9_.-]+$ ]]; then
+                echo "Error: invalid query basename in origin skip group: '${query_name}'." >&2
+                exit 1
+            fi
+            add_origin_skip_entry "${suite}:${query_name}"
+        done
+    done
+}
+
+origin_skip_queries_for_suite() {
+    local candidate_suite=$1
+    local entry
+    local result=
+    if ((${#ORIGIN_SKIP_ENTRIES[@]} > 0)); then
+        for entry in "${ORIGIN_SKIP_ENTRIES[@]}"; do
+            if [[ "${entry%%:*}" == "${candidate_suite}" ]]; then
+                if [[ -n "${result}" ]]; then
+                    result="${result} "
+                fi
+                result="${result}${entry#*:}"
+            fi
+        done
+    fi
+    printf '%s\n' "${result}"
+}
+
 rewriter_suite_directory() {
     case "$1" in
     graph)
@@ -208,16 +297,20 @@ rewriter_enabled_for_suite() {
 usage() {
     cat >&2 <<EOF
 Usage: $0 [--rewriter=SELECTION] [--skip-rewriter=SELECTION]
+          [--skip-origin=SUITE:QUERY,...] [--no-origin-skip]
           [graph|lsqb|dsb_agg|dsb_spj|tpch|job ...]
 
-With no arguments, every committed benchmark query is run with both compiled
-variants, first origin and then Yan+. Rewritten SQL runs with the origin binary
-for DSB only by default.
+With no arguments, Yan+ runs every committed benchmark query. Origin runs every
+query except Graph q4/q5/q7 and LSQB q8/q9. The compiled variants run first
+origin and then Yan+. Rewritten SQL runs with the origin binary for DSB only by
+default.
 
 Options:
   --rewriter=SELECTION       override the rewriter suite selection
   --skip-rewriter=SELECTION  remove suites from the rewriter selection
   --no-rewriter              disable all rewritten-query runs
+  --skip-origin=GROUP        replace defaults with suite:query[,query]; repeatable
+  --no-origin-skip           run every selected query with origin
 
 Environment:
   YANPLUS_DATABASE_ROOT   directory containing graph_db, lsqb_db, dsb_db,
@@ -229,6 +322,8 @@ Environment:
   YANPLUS_REWRITER_SUITES rewriter suites: none, all, dsb, or explicit suite
                           names (default: dsb)
   YANPLUS_REWRITER_SKIP   rewriter suites to remove from that selection
+  YANPLUS_ORIGIN_SKIP     origin-only suite:query[,query] groups (default:
+                          graph:q4,q5,q7 lsqb:q8,q9)
   DUCKDB_REWRITER_BIN     optional origin-compatible binary for rewritten SQL
 EOF
 }
@@ -251,6 +346,23 @@ for argument in "$@"; do
     --no-rewriter)
         REWRITER_SELECTION=none
         ;;
+    --skip-origin=*)
+        origin_skip_value=${argument#*=}
+        if [[ -z "${origin_skip_value}" ]]; then
+            echo "Error: --skip-origin requires suite:query[,query]." >&2
+            exit 1
+        fi
+        if ((ORIGIN_SKIP_CLI_SET == 0)) || [[ "${ORIGIN_SKIP_SELECTION}" == none ]]; then
+            ORIGIN_SKIP_SELECTION=${origin_skip_value}
+        else
+            ORIGIN_SKIP_SELECTION="${ORIGIN_SKIP_SELECTION} ${origin_skip_value}"
+        fi
+        ORIGIN_SKIP_CLI_SET=1
+        ;;
+    --no-origin-skip)
+        ORIGIN_SKIP_SELECTION=none
+        ORIGIN_SKIP_CLI_SET=1
+        ;;
     -*)
         echo "Error: unknown option '${argument}'." >&2
         usage
@@ -266,6 +378,7 @@ if ((${#SELECTED_SUITES[@]} == 0)); then
     SELECTED_SUITES=("${ALL_SUITES[@]}")
 fi
 configure_rewriter_suites
+configure_origin_skips
 
 if [[ ! -x "${AUTO_RUN}" ]]; then
     echo "Error: auto runner is not executable: ${AUTO_RUN}" >&2
@@ -273,7 +386,9 @@ if [[ ! -x "${AUTO_RUN}" ]]; then
 fi
 
 PREFLIGHT_FAILED=0
-TOTAL_QUERIES=0
+TOTAL_ORIGIN_QUERIES=0
+TOTAL_YANPLUS_QUERIES=0
+TOTAL_ORIGIN_SKIPPED=0
 TOTAL_REWRITER_QUERIES=0
 ACTIVE_REWRITER_SUITES=()
 for variant in "${VARIANTS[@]}"; do
@@ -309,7 +424,23 @@ for suite in "${SELECTED_SUITES[@]}"; do
             echo "Error: no SQL files found for ${suite}: ${query_dir}" >&2
             PREFLIGHT_FAILED=1
         else
-            TOTAL_QUERIES=$((TOTAL_QUERIES + query_count))
+            origin_skip_queries=$(origin_skip_queries_for_suite "${suite}")
+            origin_skip_query_names=()
+            read -r -a origin_skip_query_names <<<"${origin_skip_queries}"
+            suite_origin_skip_count=0
+            if ((${#origin_skip_query_names[@]} > 0)); then
+                for skip_query_name in "${origin_skip_query_names[@]}"; do
+                    if [[ ! -f "${query_dir}/${skip_query_name}.sql" ]]; then
+                        echo "Error: origin skip query does not exist for ${suite}: ${query_dir}/${skip_query_name}.sql" >&2
+                        PREFLIGHT_FAILED=1
+                    else
+                        suite_origin_skip_count=$((suite_origin_skip_count + 1))
+                    fi
+                done
+            fi
+            TOTAL_YANPLUS_QUERIES=$((TOTAL_YANPLUS_QUERIES + query_count))
+            TOTAL_ORIGIN_QUERIES=$((TOTAL_ORIGIN_QUERIES + query_count - suite_origin_skip_count))
+            TOTAL_ORIGIN_SKIPPED=$((TOTAL_ORIGIN_SKIPPED + suite_origin_skip_count))
         fi
     fi
     if [[ ! -f "${database_path}" ]]; then
@@ -353,15 +484,16 @@ if ((PREFLIGHT_FAILED != 0)); then
 fi
 
 echo "Suites: ${SELECTED_SUITES[*]}"
-echo "Queries per variant: ${TOTAL_QUERIES}"
-echo "Compiled binary/query pairs: $((TOTAL_QUERIES * 2))"
+echo "Origin queries: ${TOTAL_ORIGIN_QUERIES} (${TOTAL_ORIGIN_SKIPPED} skipped)"
+echo "Yan+ queries: ${TOTAL_YANPLUS_QUERIES}"
+echo "Compiled binary/query pairs: $((TOTAL_ORIGIN_QUERIES + TOTAL_YANPLUS_QUERIES))"
 if ((TOTAL_REWRITER_QUERIES > 0)); then
     echo "Rewriter suites: ${ACTIVE_REWRITER_SUITES[*]}"
     echo "Rewriter queries: ${TOTAL_REWRITER_QUERIES}"
 else
     echo "Rewriter suites: none"
 fi
-echo "Total query configurations: $((TOTAL_QUERIES * 2 + TOTAL_REWRITER_QUERIES))"
+echo "Total query configurations: $((TOTAL_ORIGIN_QUERIES + TOTAL_YANPLUS_QUERIES + TOTAL_REWRITER_QUERIES))"
 echo "Threads: ${NUM_THREADS}"
 echo "CPU list: ${CPU_LIST}"
 echo "Repetitions: ${REPETITIONS}"
@@ -375,18 +507,27 @@ for suite in "${SELECTED_SUITES[@]}"; do
     for variant in "${VARIANTS[@]}"; do
         echo
         echo "Starting ${suite} with ${variant}"
-        "${AUTO_RUN}" "${database_path}" "${query_dir}" "${variant}" \
-            "${NUM_THREADS}" "${CPU_LIST}" "${REPETITIONS}"
+        if [[ "${variant}" == origin ]]; then
+            origin_skip_queries=$(origin_skip_queries_for_suite "${suite}")
+            YANPLUS_ORIGIN_SKIP_QUERIES="${origin_skip_queries}" \
+                "${AUTO_RUN}" "${database_path}" "${query_dir}" "${variant}" \
+                "${NUM_THREADS}" "${CPU_LIST}" "${REPETITIONS}"
+        else
+            YANPLUS_ORIGIN_SKIP_QUERIES= \
+                "${AUTO_RUN}" "${database_path}" "${query_dir}" "${variant}" \
+                "${NUM_THREADS}" "${CPU_LIST}" "${REPETITIONS}"
+        fi
     done
     if rewriter_enabled_for_suite "${suite}"; then
         rewrite_directory=$(rewriter_suite_directory "${suite}")
         rewrite_dir="${SCRIPT_PATH}/${rewrite_directory}"
         echo
         echo "Starting ${suite} with rewriter"
-        "${AUTO_RUN}" "${database_path}" "${rewrite_dir}" rewriter \
+        YANPLUS_ORIGIN_SKIP_QUERIES= \
+            "${AUTO_RUN}" "${database_path}" "${rewrite_dir}" rewriter \
             "${NUM_THREADS}" "${CPU_LIST}" "${REPETITIONS}"
     fi
 done
 
 echo
-echo "Completed $((TOTAL_QUERIES * 2 + TOTAL_REWRITER_QUERIES)) query configurations."
+echo "Completed $((TOTAL_ORIGIN_QUERIES + TOTAL_YANPLUS_QUERIES + TOTAL_REWRITER_QUERIES)) query configurations."
