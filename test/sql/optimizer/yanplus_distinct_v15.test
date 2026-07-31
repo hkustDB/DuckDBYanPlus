@@ -1,0 +1,159 @@
+# name: test/sql/optimizer/yanplus_distinct_v15.test
+# description: Yan+ ports SELECT DISTINCT pushdown to the DuckDB v1.5 logical plan
+# group: [optimizer]
+
+require yanplus
+
+statement ok
+SET threads = 1
+
+statement ok
+CREATE TABLE yan_distinct_graph(src INTEGER, dst INTEGER)
+
+statement ok
+INSERT INTO yan_distinct_graph VALUES
+    (1, 2), (2, 3), (3, 4), (4, 5), (2, 4), (3, 5), (5, 6),
+    (2, 3), (NULL, 2), (2, NULL)
+
+# Graph q5: the native result is the correctness baseline.
+statement ok
+SET yanplus_enable = false
+
+query I rowsort
+SELECT DISTINCT g2.src
+FROM yan_distinct_graph g1, yan_distinct_graph g2,
+     yan_distinct_graph g3, yan_distinct_graph g4
+WHERE g1.dst = g2.src AND g2.dst = g3.src AND g3.dst = g4.src
+----
+2
+3
+
+statement ok
+SET yanplus_enable = true
+
+query I rowsort
+SELECT DISTINCT g2.src
+FROM yan_distinct_graph g1, yan_distinct_graph g2,
+     yan_distinct_graph g3, yan_distinct_graph g4
+WHERE g1.dst = g2.src AND g2.dst = g3.src AND g3.dst = g4.src
+----
+2
+3
+
+# More than one HASH_GROUP_BY proves that Yan+ inserted partial DISTINCT
+# operators instead of silently using the native root-only DISTINCT plan.
+query II
+EXPLAIN SELECT DISTINCT g2.src
+FROM yan_distinct_graph g1, yan_distinct_graph g2,
+     yan_distinct_graph g3, yan_distinct_graph g4
+WHERE g1.dst = g2.src AND g2.dst = g3.src AND g3.dst = g4.src
+----
+physical_plan	<REGEX>:.*HASH_GROUP_BY.*HASH_GROUP_BY.*
+
+# A two-column root DISTINCT must retain both result columns while generated
+# branch DISTINCT operators prune only columns that are not needed upstream.
+query II rowsort
+SELECT DISTINCT g2.src, g2.dst
+FROM yan_distinct_graph g1, yan_distinct_graph g2, yan_distinct_graph g3,
+     yan_distinct_graph g4, yan_distinct_graph g5
+WHERE g1.dst = g2.src AND g2.dst = g3.src
+  AND g4.dst = g2.src AND g2.dst = g5.src
+----
+2	3
+2	4
+3	4
+3	5
+4	5
+
+query II
+EXPLAIN SELECT DISTINCT g2.src, g2.dst
+FROM yan_distinct_graph g1, yan_distinct_graph g2, yan_distinct_graph g3,
+     yan_distinct_graph g4, yan_distinct_graph g5
+WHERE g1.dst = g2.src AND g2.dst = g3.src
+  AND g4.dst = g2.src AND g2.dst = g5.src
+----
+physical_plan	<REGEX>:.*HASH_GROUP_BY.*HASH_GROUP_BY.*
+
+# Computed DISTINCT expressions retain the native plan. In particular, a
+# volatile result expression must still run once for every joined row.
+statement ok
+CREATE TABLE yan_distinct_duplicates(src INTEGER, dst INTEGER)
+
+statement ok
+INSERT INTO yan_distinct_duplicates VALUES (1, 1), (1, 1)
+
+statement ok
+CREATE SEQUENCE yan_distinct_projection_sequence START 1
+
+query I rowsort
+SELECT DISTINCT nextval('yan_distinct_projection_sequence')
+FROM yan_distinct_duplicates g1, yan_distinct_duplicates g2,
+     yan_distinct_duplicates g3, yan_distinct_duplicates g4
+WHERE g1.dst = g2.src AND g2.dst = g3.src AND g3.dst = g4.src
+----
+1
+10
+11
+12
+13
+14
+15
+16
+2
+3
+4
+5
+6
+7
+8
+9
+
+query II
+EXPLAIN SELECT DISTINCT nextval('yan_distinct_projection_sequence')
+FROM yan_distinct_duplicates g1, yan_distinct_duplicates g2,
+     yan_distinct_duplicates g3, yan_distinct_duplicates g4
+WHERE g1.dst = g2.src AND g2.dst = g3.src AND g3.dst = g4.src
+----
+physical_plan	<!REGEX>:.*HASH_GROUP_BY.*HASH_GROUP_BY.*
+
+# A volatile filter also depends on the original join multiplicity and must
+# not have partial DISTINCT operators inserted below it.
+statement ok
+CREATE SEQUENCE yan_distinct_filter_sequence START 1
+
+query I
+SELECT DISTINCT g1.src
+FROM yan_distinct_duplicates g1
+JOIN yan_distinct_duplicates g2 ON g1.dst = g2.src
+WHERE nextval('yan_distinct_filter_sequence') % 2 = 0
+----
+1
+
+query II
+EXPLAIN SELECT DISTINCT g1.src
+FROM yan_distinct_duplicates g1
+JOIN yan_distinct_duplicates g2 ON g1.dst = g2.src
+WHERE nextval('yan_distinct_filter_sequence') % 2 = 0
+----
+physical_plan	<!REGEX>:.*HASH_GROUP_BY.*HASH_GROUP_BY.*
+
+# Unsupported nested DISTINCT shapes stay on DuckDB's native path. In
+# particular, normal v1.5 pruning must not collapse DISTINCT(a,b) to DISTINCT(a).
+statement ok
+CREATE TABLE yan_distinct_pairs(a INTEGER, b INTEGER)
+
+statement ok
+CREATE TABLE yan_distinct_keys(a INTEGER)
+
+statement ok
+INSERT INTO yan_distinct_pairs VALUES (1, 10), (1, 20), (1, 20)
+
+statement ok
+INSERT INTO yan_distinct_keys VALUES (1)
+
+query I
+SELECT count(*)
+FROM (SELECT DISTINCT a, b FROM yan_distinct_pairs) pairs
+JOIN yan_distinct_keys keys USING (a)
+----
+2

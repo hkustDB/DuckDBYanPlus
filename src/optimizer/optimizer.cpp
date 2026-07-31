@@ -50,6 +50,7 @@
 #include "duckdb/planner/expression/bound_aggregate_expression.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/operator/logical_comparison_join.hpp"
+#include "duckdb/planner/operator/logical_distinct.hpp"
 #endif
 #include "duckdb/planner/planner.hpp"
 
@@ -100,6 +101,11 @@ static bool InspectYanplusPlanShape(const LogicalOperator &op, YanplusPlanShape 
 		if (op.children.size() != 1) {
 			return false;
 		}
+		for (auto &expression : op.expressions) {
+			if (expression->IsVolatile()) {
+				return false;
+			}
+		}
 		return InspectYanplusPlanShape(*op.children[0], shape);
 	case LogicalOperatorType::LOGICAL_PROJECTION:
 		if (op.children.size() != 1) {
@@ -138,6 +144,9 @@ static bool InspectYanplusPlanShape(const LogicalOperator &op, YanplusPlanShape 
 			return false;
 		}
 		for (auto &condition : join.conditions) {
+			if (condition.left->IsVolatile() || condition.right->IsVolatile()) {
+				return false;
+			}
 			// GYO and semi-join key extraction require one binding per side.
 			// Keep complex equality operands on DuckDB's native optimizer path;
 			// non-equality residual predicates remain valid final checks.
@@ -395,7 +404,7 @@ void Optimizer::RunBuiltInOptimizers() {
 			if (query_type != QueryType::SELECT_DISTINCT) {
 				for (int height = 0; height < max_height; height++) {
 					RunOptimizer(OptimizerType::UNUSED_COLUMNS, [&]() {
-						RemoveUnusedColumns unused(binder, context, true, true);
+						RemoveUnusedColumns unused(binder, context, true);
 						unused.VisitOperator(*analysis_plan);
 					});
 					RunOptimizer(OptimizerType::AGGREGATION_PUSHDOWN, [&]() {
@@ -421,7 +430,7 @@ void Optimizer::RunBuiltInOptimizers() {
 			if (query_type != QueryType::SELECT_DISTINCT) {
 				for (int height = 0; height < max_height; height++) {
 					RunOptimizer(OptimizerType::UNUSED_COLUMNS, [&]() {
-						RemoveUnusedColumns unused(binder, context, true, true);
+						RemoveUnusedColumns unused(binder, context, true);
 						unused.VisitOperator(*plan);
 					});
 					RunOptimizer(OptimizerType::AGGREGATION_PUSHDOWN, [&]() {
@@ -669,12 +678,36 @@ QueryType Optimizer::DetectQueryType(LogicalOperator *op) {
 }
 
 bool Optimizer::IsYanplusEligible(LogicalOperator *op, QueryType query_type) {
-	if (query_type == QueryType::OTHER || query_type == QueryType::SELECT_DISTINCT) {
+	if (query_type == QueryType::OTHER) {
 		return false;
 	}
 	op = GetYanplusQueryBody(op);
-	if (!op || op->type != LogicalOperatorType::LOGICAL_PROJECTION || op->children.size() != 1) {
+	if (!op) {
 		return false;
+	}
+	if (query_type == QueryType::SELECT_DISTINCT) {
+		if (op->type != LogicalOperatorType::LOGICAL_DISTINCT || op->children.size() != 1 ||
+		    op->children[0]->type != LogicalOperatorType::LOGICAL_PROJECTION) {
+			return false;
+		}
+		auto &distinct = op->Cast<LogicalDistinct>();
+		if (distinct.distinct_type != DistinctType::DISTINCT || distinct.order_by) {
+			return false;
+		}
+		op = op->children[0].get();
+	}
+	if (op->type != LogicalOperatorType::LOGICAL_PROJECTION || op->children.size() != 1) {
+		return false;
+	}
+	if (query_type == QueryType::SELECT_DISTINCT) {
+		// Partial DISTINCT is only valid when the result columns preserve the
+		// child's equality semantics. Computed and volatile expressions retain
+		// DuckDB's native plan (e.g., random() must still run once per join row).
+		for (auto &expression : op->expressions) {
+			if (expression->GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF) {
+				return false;
+			}
+		}
 	}
 
 	auto aggregate_query = query_type == QueryType::COUNT_STAR || query_type == QueryType::MINMAX_AGGREGATE ||

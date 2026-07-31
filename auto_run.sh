@@ -291,7 +291,7 @@ write_copy_query() {
     local output_file=$2
     {
         printf 'COPY (\n'
-        awk '
+        if ! awk '
             {
                 line[NR] = $0
             }
@@ -308,7 +308,9 @@ write_copy_query() {
                     print line[i]
                 }
             }
-        ' "${input_file}"
+        ' "${input_file}"; then
+            return 1
+        fi
         printf ") TO '/dev/null' (FORMAT CSV);\n"
     } >"${output_file}"
 }
@@ -455,8 +457,9 @@ prepare_rewriter_query() {
 CURRENT_TEMP=
 CURRENT_SETUP=
 CURRENT_RENDERED=
+CURRENT_TIME_TEMP=
 cleanup() {
-    for temporary_file in "${CURRENT_TEMP}" "${CURRENT_SETUP}" "${CURRENT_RENDERED}"; do
+    for temporary_file in "${CURRENT_TEMP}" "${CURRENT_SETUP}" "${CURRENT_RENDERED}" "${CURRENT_TIME_TEMP}"; do
         if [[ -n "${temporary_file}" && -f "${temporary_file}" ]]; then
             rm -f -- "${temporary_file}"
         fi
@@ -477,6 +480,42 @@ echo "Experiment threads: ${NUM_THREADS}"
 echo "Experiment CPU list: ${CPU_LIST} (${AVAILABLE_CPU_COUNT} available CPUs)"
 echo "Measured repetitions: ${REPETITIONS} (one untimed warm-up per repetition)"
 
+# Clear every selected query's previous result before starting. If this run is
+# interrupted during an earlier query, a later query cannot retain a stale log
+# or timing file that appears to belong to this run.
+for query_file in "${QUERY_FILES[@]}"; do
+    query_name=$(basename -- "${query_file}" .sql)
+    rm -f -- "${INPUT_DIR_PATH}/log_${query_name}_${VARIANT}.txt" \
+        "${INPUT_DIR_PATH}/time_${query_name}_${VARIANT}.txt"
+done
+
+FAILED_QUERY_NAMES=()
+FAILED_QUERY_STAGES=()
+FAILED_QUERY_STATUSES=()
+FAILED_QUERY_REPETITIONS=()
+SUCCESSFUL_QUERY_COUNT=0
+
+record_query_failure() {
+    local query_name=$1
+    local failure_stage=$2
+    local failure_status=$3
+    local failure_repetition=$4
+
+    FAILED_QUERY_NAMES+=("${query_name}")
+    FAILED_QUERY_STAGES+=("${failure_stage}")
+    FAILED_QUERY_STATUSES+=("${failure_status}")
+    FAILED_QUERY_REPETITIONS+=("${failure_repetition}")
+    {
+        echo "# result=failed"
+        echo "# failure_stage=${failure_stage}"
+        echo "# failure_exit=${failure_status}"
+        echo "# failure_repetition=${failure_repetition}"
+    } >>"${LOG_FILE}"
+    rm -f -- "${TIME_FILE}"
+    printf 'Warning: %s query %s failed at %s (exit %s, repetition %s); continuing.\n' \
+        "${VARIANT}" "${query_name}" "${failure_stage}" "${failure_status}" "${failure_repetition}" >&2
+}
+
 for QUERY in "${QUERY_FILES[@]}"; do
     filename=$(basename -- "${QUERY}" .sql)
     LOG_FILE="${INPUT_DIR_PATH}/log_${filename}_${VARIANT}.txt"
@@ -484,25 +523,7 @@ for QUERY in "${QUERY_FILES[@]}"; do
     CURRENT_TEMP=$(mktemp "/tmp/duckdb-${VARIANT}.XXXXXX.sql")
     CURRENT_SETUP=$(mktemp "/tmp/duckdb-${VARIANT}-setup.XXXXXX.sql")
     CURRENT_RENDERED=$(mktemp "/tmp/duckdb-${VARIANT}-rendered.XXXXXX.sql")
-
-    render_query "${QUERY}" "${CURRENT_RENDERED}"
-    if grep -Eq ':(country|tagClass|startDate|endDate)([^[:alnum:]_]|$)' "${CURRENT_RENDERED}"; then
-        echo "Error: unresolved LSQB parameter in ${QUERY}." >&2
-        exit 1
-    fi
-    if [[ "${VARIANT}" == rewriter ]]; then
-        if ! prepare_rewriter_query "${CURRENT_RENDERED}" "${CURRENT_SETUP}" "${CURRENT_TEMP}"; then
-            echo "Error: could not separate rewriter setup from the final query in ${QUERY}." >&2
-            exit 1
-        fi
-        if grep -Eiq '^[[:space:]]*create[[:space:]]+(or[[:space:]]+replace[[:space:]]+)?view[[:space:]]+' \
-            "${CURRENT_SETUP}"; then
-            echo "Error: persistent setup view remains after preparing ${QUERY}." >&2
-            exit 1
-        fi
-    else
-        write_copy_query "${CURRENT_RENDERED}" "${CURRENT_TEMP}"
-    fi
+    CURRENT_TIME_TEMP=$(mktemp "${INPUT_DIR_PATH}/.time_${filename}_${VARIANT}.XXXXXX")
 
     {
         echo "# variant=${VARIANT}"
@@ -521,7 +542,59 @@ for QUERY in "${QUERY_FILES[@]}"; do
             echo "# rewriter_setup=untimed temporary views"
         fi
     } >"${LOG_FILE}"
-    : >"${TIME_FILE}"
+
+    QUERY_FAILURE_STAGE=
+    QUERY_FAILURE_STATUS=0
+    QUERY_FAILURE_REPETITION=0
+    if render_query "${QUERY}" "${CURRENT_RENDERED}"; then
+        :
+    else
+        QUERY_FAILURE_STATUS=$?
+        QUERY_FAILURE_STAGE=render
+        echo "Error: could not render ${QUERY}." | tee -a "${LOG_FILE}" >&2
+    fi
+    if [[ -z "${QUERY_FAILURE_STAGE}" ]] &&
+       grep -Eq ':(country|tagClass|startDate|endDate)([^[:alnum:]_]|$)' "${CURRENT_RENDERED}"; then
+        QUERY_FAILURE_STAGE=parameters
+        QUERY_FAILURE_STATUS=1
+        echo "Error: unresolved LSQB parameter in ${QUERY}." | tee -a "${LOG_FILE}" >&2
+    fi
+    if [[ -z "${QUERY_FAILURE_STAGE}" && "${VARIANT}" == rewriter ]]; then
+        if prepare_rewriter_query "${CURRENT_RENDERED}" "${CURRENT_SETUP}" "${CURRENT_TEMP}"; then
+            :
+        else
+            QUERY_FAILURE_STATUS=$?
+            QUERY_FAILURE_STAGE=rewriter_prepare
+            echo "Error: could not separate rewriter setup from the final query in ${QUERY}." | \
+                tee -a "${LOG_FILE}" >&2
+        fi
+        if [[ -z "${QUERY_FAILURE_STAGE}" ]] &&
+           grep -Eiq '^[[:space:]]*create[[:space:]]+(or[[:space:]]+replace[[:space:]]+)?view[[:space:]]+' \
+               "${CURRENT_SETUP}"; then
+            QUERY_FAILURE_STAGE=rewriter_setup
+            QUERY_FAILURE_STATUS=1
+            echo "Error: persistent setup view remains after preparing ${QUERY}." | \
+                tee -a "${LOG_FILE}" >&2
+        fi
+    elif [[ -z "${QUERY_FAILURE_STAGE}" ]]; then
+        if write_copy_query "${CURRENT_RENDERED}" "${CURRENT_TEMP}"; then
+            :
+        else
+            QUERY_FAILURE_STATUS=$?
+            QUERY_FAILURE_STAGE=query_prepare
+            echo "Error: could not prepare ${QUERY}." | tee -a "${LOG_FILE}" >&2
+        fi
+    fi
+
+    if [[ -n "${QUERY_FAILURE_STAGE}" ]]; then
+        record_query_failure "${filename}" "${QUERY_FAILURE_STAGE}" "${QUERY_FAILURE_STATUS}" 0
+        cleanup
+        CURRENT_TEMP=
+        CURRENT_SETUP=
+        CURRENT_RENDERED=
+        CURRENT_TIME_TEMP=
+        continue
+    fi
 
     echo "Start ${VARIANT}: ${QUERY}"
     for ((current_task = 1; current_task <= REPETITIONS; current_task++)); do
@@ -545,22 +618,59 @@ for QUERY in "${QUERY_FILES[@]}"; do
             status=$?
             printf '%s\n' "${RUN_OUTPUT}" | tee -a "${LOG_FILE}" >&2
             echo "Error: DuckDB experiment failed for ${QUERY} (exit ${status})." >&2
-            exit "${status}"
+            if [[ "${status}" == 130 || "${status}" == 143 ]]; then
+                exit "${status}"
+            fi
+            QUERY_FAILURE_STAGE=duckdb
+            QUERY_FAILURE_STATUS=${status}
+            QUERY_FAILURE_REPETITION=${current_task}
+            break
         fi
         printf '%s\n' "${RUN_OUTPUT}" | tee -a "${LOG_FILE}"
         ELAPSED=$(printf '%s\n' "${RUN_OUTPUT}" |
             awk '/^Run Time \(s\): real / { value = $5 } END { print value }')
         if ! [[ "${ELAPSED}" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
             echo "Error: could not parse a numeric DuckDB timer value for ${QUERY}." >&2
-            exit 1
+            QUERY_FAILURE_STAGE=timer_parse
+            QUERY_FAILURE_STATUS=1
+            QUERY_FAILURE_REPETITION=${current_task}
+            break
         fi
-        printf '%s\n' "${ELAPSED}" >>"${TIME_FILE}"
+        printf '%s\n' "${ELAPSED}" >>"${CURRENT_TIME_TEMP}"
     done
 
-    awk '{ sum += $1 } END { if (NR) print "AVG", sum / NR }' "${TIME_FILE}" >>"${TIME_FILE}"
+    if [[ -n "${QUERY_FAILURE_STAGE}" ]]; then
+        record_query_failure "${filename}" "${QUERY_FAILURE_STAGE}" "${QUERY_FAILURE_STATUS}" \
+            "${QUERY_FAILURE_REPETITION}"
+        cleanup
+        CURRENT_TEMP=
+        CURRENT_SETUP=
+        CURRENT_RENDERED=
+        CURRENT_TIME_TEMP=
+        echo "End ${VARIANT}: ${QUERY} (FAILED)"
+        continue
+    fi
+
+    awk '{ sum += $1 } END { if (NR) print "AVG", sum / NR }' "${CURRENT_TIME_TEMP}" >>"${CURRENT_TIME_TEMP}"
+    mv -- "${CURRENT_TIME_TEMP}" "${TIME_FILE}"
+    CURRENT_TIME_TEMP=
+    echo "# result=success" >>"${LOG_FILE}"
+    SUCCESSFUL_QUERY_COUNT=$((SUCCESSFUL_QUERY_COUNT + 1))
     rm -f -- "${CURRENT_TEMP}" "${CURRENT_SETUP}" "${CURRENT_RENDERED}"
     CURRENT_TEMP=
     CURRENT_SETUP=
     CURRENT_RENDERED=
     echo "End ${VARIANT}: ${QUERY}"
 done
+
+echo
+echo "Query summary: ${SUCCESSFUL_QUERY_COUNT} succeeded, ${#FAILED_QUERY_NAMES[@]} failed"
+if ((${#FAILED_QUERY_NAMES[@]} > 0)); then
+    echo "Failed queries:" >&2
+    for ((failure_idx = 0; failure_idx < ${#FAILED_QUERY_NAMES[@]}; failure_idx++)); do
+        printf '  %s: stage=%s, exit=%s, repetition=%s\n' \
+            "${FAILED_QUERY_NAMES[failure_idx]}" "${FAILED_QUERY_STAGES[failure_idx]}" \
+            "${FAILED_QUERY_STATUSES[failure_idx]}" "${FAILED_QUERY_REPETITIONS[failure_idx]}" >&2
+    done
+    exit 1
+fi

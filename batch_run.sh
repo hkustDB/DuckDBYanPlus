@@ -499,6 +499,20 @@ echo "CPU list: ${CPU_LIST}"
 echo "Repetitions: ${REPETITIONS}"
 echo "Variant order: ${VARIANTS[*]}"
 
+FAILED_RUN_LABELS=()
+FAILED_RUN_STATUSES=()
+
+record_failed_run() {
+    local run_label=$1
+    local run_status=$2
+    if [[ "${run_status}" == 130 || "${run_status}" == 143 ]]; then
+        exit "${run_status}"
+    fi
+    FAILED_RUN_LABELS+=("${run_label}")
+    FAILED_RUN_STATUSES+=("${run_status}")
+    echo "Warning: ${run_label} completed with query failures (exit ${run_status}); continuing." >&2
+}
+
 for suite in "${SELECTED_SUITES[@]}"; do
     database_name=$(suite_database "${suite}")
     query_directory=$(suite_directory "${suite}")
@@ -509,13 +523,23 @@ for suite in "${SELECTED_SUITES[@]}"; do
         echo "Starting ${suite} with ${variant}"
         if [[ "${variant}" == origin ]]; then
             origin_skip_queries=$(origin_skip_queries_for_suite "${suite}")
-            YANPLUS_ORIGIN_SKIP_QUERIES="${origin_skip_queries}" \
+            if YANPLUS_ORIGIN_SKIP_QUERIES="${origin_skip_queries}" \
                 "${AUTO_RUN}" "${database_path}" "${query_dir}" "${variant}" \
-                "${NUM_THREADS}" "${CPU_LIST}" "${REPETITIONS}"
+                "${NUM_THREADS}" "${CPU_LIST}" "${REPETITIONS}"; then
+                :
+            else
+                run_status=$?
+                record_failed_run "${suite}:${variant}" "${run_status}"
+            fi
         else
-            YANPLUS_ORIGIN_SKIP_QUERIES= \
+            if YANPLUS_ORIGIN_SKIP_QUERIES= \
                 "${AUTO_RUN}" "${database_path}" "${query_dir}" "${variant}" \
-                "${NUM_THREADS}" "${CPU_LIST}" "${REPETITIONS}"
+                "${NUM_THREADS}" "${CPU_LIST}" "${REPETITIONS}"; then
+                :
+            else
+                run_status=$?
+                record_failed_run "${suite}:${variant}" "${run_status}"
+            fi
         fi
     done
     if rewriter_enabled_for_suite "${suite}"; then
@@ -523,11 +547,24 @@ for suite in "${SELECTED_SUITES[@]}"; do
         rewrite_dir="${SCRIPT_PATH}/${rewrite_directory}"
         echo
         echo "Starting ${suite} with rewriter"
-        YANPLUS_ORIGIN_SKIP_QUERIES= \
+        if YANPLUS_ORIGIN_SKIP_QUERIES= \
             "${AUTO_RUN}" "${database_path}" "${rewrite_dir}" rewriter \
-            "${NUM_THREADS}" "${CPU_LIST}" "${REPETITIONS}"
+            "${NUM_THREADS}" "${CPU_LIST}" "${REPETITIONS}"; then
+            :
+        else
+            run_status=$?
+            record_failed_run "${suite}:rewriter" "${run_status}"
+        fi
     fi
 done
 
 echo
-echo "Completed $((TOTAL_ORIGIN_QUERIES + TOTAL_YANPLUS_QUERIES + TOTAL_REWRITER_QUERIES)) query configurations."
+echo "Attempted $((TOTAL_ORIGIN_QUERIES + TOTAL_YANPLUS_QUERIES + TOTAL_REWRITER_QUERIES)) query configurations."
+if ((${#FAILED_RUN_LABELS[@]} > 0)); then
+    echo "Failed run groups: ${#FAILED_RUN_LABELS[@]}" >&2
+    for ((failure_idx = 0; failure_idx < ${#FAILED_RUN_LABELS[@]}; failure_idx++)); do
+        echo "  ${FAILED_RUN_LABELS[failure_idx]}: exit=${FAILED_RUN_STATUSES[failure_idx]}" >&2
+    done
+    exit 1
+fi
+echo "All query configurations completed successfully."

@@ -91,6 +91,13 @@ build/release/test/unittest \
   test/sql/optimizer/plan/test_yanplus_lsqb_q2.test
 ```
 
+Yan+ also supports plain, direct-column `SELECT DISTINCT` over its supported
+inner equality-join shape. It retains the root DISTINCT result columns and
+pushes smaller partial DISTINCT operators into the join tree, following the
+original main-branch implementation. Computed or volatile result expressions,
+volatile filters, `DISTINCT ON`, ordered DISTINCT, and unsupported nested query
+shapes conservatively retain DuckDB's native optimizer path.
+
 ## Build
 
 You can build this repository in the same way as the original DuckDB. A `Makefile` wraps the build process. For available build targets and configuration flags, see the [DuckDB Build Configuration Guide](https://duckdb.org/docs/stable/dev/building/build_configuration.html).
@@ -268,6 +275,14 @@ repetitions. Results are written beside each query as
 LSQB BI templates use documented, overridable defaults:
 `LSQB_COUNTRY=China`, `LSQB_TAG_CLASS=Song`,
 `LSQB_START_DATE=2012-08-29`, and `LSQB_END_DATE=2012-11-24`.
+
+A query failure stops only that query's remaining repetitions. The runners
+record its stage and original exit status in the log, omit its final timing
+file, and continue with the remaining queries, variants, suites, and rewriter
+runs. After attempting everything, they print a failure summary and return a
+nonzero status if any query failed. Timing files are published atomically only
+after all repetitions for that query succeed, so partial or stale timings are
+not reported as valid results.
 
 `taskset` is Linux-only and the values are logical CPU IDs. Check the target
 host layout with `lscpu -e=CPU,CORE,SOCKET,NODE` before using this machine-specific

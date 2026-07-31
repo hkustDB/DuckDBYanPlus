@@ -113,7 +113,7 @@ void RemoveUnusedColumns::VisitOperator(LogicalOperator &op) {
 		// Note: We allow all optimizations (join column replacement, column pruning) to run below ROLLUP
 		// The duplicate groups optimizer will be responsible for not breaking ROLLUP by skipping when
 		// multiple grouping sets are present
-		RemoveUnusedColumns remove(binder, context, everything_referenced);
+		RemoveUnusedColumns remove(binder, context, everything_referenced, yanplus_distinct_pruning);
 		remove.VisitOperatorExpressions(op);
 		remove.VisitOperator(*op.children[0]);
 		return;
@@ -192,7 +192,7 @@ void RemoveUnusedColumns::VisitOperator(LogicalOperator &op) {
 			setop.column_count = entries.size();
 
 			for (idx_t child_idx = 0; child_idx < op.children.size(); child_idx++) {
-				RemoveUnusedColumns remove(binder, context, true);
+				RemoveUnusedColumns remove(binder, context, true, yanplus_distinct_pruning);
 				auto &child = op.children[child_idx];
 
 				// we push a projection under this child that references the required columns of the union
@@ -216,7 +216,7 @@ void RemoveUnusedColumns::VisitOperator(LogicalOperator &op) {
 			return;
 		}
 		for (auto &child : op.children) {
-			RemoveUnusedColumns remove(binder, context, true);
+			RemoveUnusedColumns remove(binder, context, true, yanplus_distinct_pruning);
 			remove.VisitOperator(*child);
 		}
 		return;
@@ -225,7 +225,7 @@ void RemoveUnusedColumns::VisitOperator(LogicalOperator &op) {
 	case LogicalOperatorType::LOGICAL_INTERSECT: {
 		// for INTERSECT/EXCEPT operations we can't remove anything, just recursively visit the children
 		for (auto &child : op.children) {
-			RemoveUnusedColumns remove(binder, context, true);
+			RemoveUnusedColumns remove(binder, context, true, yanplus_distinct_pruning);
 			remove.VisitOperator(*child);
 		}
 		return;
@@ -246,7 +246,7 @@ void RemoveUnusedColumns::VisitOperator(LogicalOperator &op) {
 			}
 		}
 		// then recurse into the children of this projection
-		RemoveUnusedColumns remove(binder, context);
+		RemoveUnusedColumns remove(binder, context, false, yanplus_distinct_pruning);
 		remove.VisitOperatorExpressions(op);
 		remove.VisitOperator(*op.children[0]);
 		return;
@@ -260,7 +260,7 @@ void RemoveUnusedColumns::VisitOperator(LogicalOperator &op) {
 		//! on top of them can select from only the table values being inserted.
 		//! TODO: Push down the projections from the returning statement
 		//! TODO: Be careful because you might be adding expressions when a user returns *
-		RemoveUnusedColumns remove(binder, context, true);
+		RemoveUnusedColumns remove(binder, context, true, yanplus_distinct_pruning);
 		remove.VisitOperatorExpressions(op);
 		remove.VisitOperator(*op.children[0]);
 		return;
@@ -272,7 +272,7 @@ void RemoveUnusedColumns::VisitOperator(LogicalOperator &op) {
 		if (!op.children.empty()) {
 			// Some LOGICAL_GET operators (e.g., table in out functions) may have a
 			// child operator. So we recurse into it if it exists.
-			RemoveUnusedColumns remove(binder, context, true);
+			RemoveUnusedColumns remove(binder, context, true, yanplus_distinct_pruning);
 			remove.VisitOperator(*op.children[0]);
 		}
 		return;
@@ -287,7 +287,25 @@ void RemoveUnusedColumns::VisitOperator(LogicalOperator &op) {
 		// distinct, all projected columns are used for the DISTINCT computation
 		// mark all columns as used and continue to the children
 		// FIXME: DISTINCT with expression list does not implicitly reference everything
-		everything_referenced = true;
+		if (!yanplus_distinct_pruning) {
+			// Preserve DuckDB v1.5's normal DISTINCT behavior outside the
+			// opt-in Yan+ partial-aggregation pruning pass.
+			everything_referenced = true;
+		} else if (!everything_referenced) {
+			for (idx_t target_idx = distinct.distinct_targets.size(); target_idx > 0; target_idx--) {
+				auto &target = distinct.distinct_targets[target_idx - 1];
+				// The generated Yan+ targets are bound column references. Keep
+				// any other expression shape conservatively.
+				bool is_referenced = true;
+				if (target->GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF) {
+					auto &column_ref = target->Cast<BoundColumnRefExpression>();
+					is_referenced = column_references.find(column_ref.binding) != column_references.end();
+				}
+				if (!is_referenced) {
+					distinct.distinct_targets.erase_at(target_idx - 1);
+				}
+			}
+		}
 		break;
 	}
 	case LogicalOperatorType::LOGICAL_RECURSIVE_CTE:
