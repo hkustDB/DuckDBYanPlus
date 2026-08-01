@@ -7,12 +7,12 @@ tables and the same DuckDB v1.5 join plan. The only changed setting is
 The default machine policy is:
 
 - 64 DuckDB threads.
-- Logical CPUs `0-63` through Linux `taskset`.
-- Logical CPUs `64-71` excluded from the DuckDB processes.
+- Logical CPUs `0-31,36-67` through Linux `taskset`.
+- Logical CPUs `32-35` and `68-71` excluded from the DuckDB processes.
 
 DuckDB v1.5 automatically pins workers on hosts with more than 64 CPUs. This
 implementation maps that pinning onto the inherited affinity mask, so
-automatic startup pinning cannot select CPUs 64–71. The benchmark
+automatic startup pinning cannot select CPUs outside that mask. The benchmark
 runner's `--threads` option is the single source of truth for its worker count.
 
 Build and run it from the repository root:

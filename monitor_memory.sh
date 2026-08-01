@@ -9,7 +9,7 @@ DUCKDB_PATHS=(
 
 # Fixed experiment policy. Environment variables allow deliberate overrides.
 NUM_THREADS=${YANPLUS_THREADS:-64}
-CPU_LIST=${YANPLUS_CPU_LIST:-0-63}
+CPU_LIST=${YANPLUS_CPU_LIST:-0-31,36-67}
 
 # Configuration - Define query files with their corresponding databases
 declare -A QUERY_DATABASE_MAP=(

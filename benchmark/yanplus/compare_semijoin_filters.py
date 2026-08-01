@@ -20,7 +20,7 @@ BENCHMARKS = {
     "HASH": HERE / "semijoin_filter_hash.benchmark",
 }
 DEFAULT_THREADS = 64
-DEFAULT_CPU_LIST = "0-63"
+DEFAULT_CPU_LIST = "0-31,36-67"
 
 
 def benchmark_selector(benchmark):

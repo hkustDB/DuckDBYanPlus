@@ -7,7 +7,7 @@ SCRIPT_PATH=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 AUTO_RUN="${SCRIPT_PATH}/auto_run.sh"
 DATABASE_ROOT=${YANPLUS_DATABASE_ROOT:-"${SCRIPT_PATH}"}
 NUM_THREADS=${YANPLUS_THREADS:-64}
-CPU_LIST=${YANPLUS_CPU_LIST:-0-63}
+CPU_LIST=${YANPLUS_CPU_LIST:-0-31,36-67}
 REPETITIONS=${YANPLUS_REPETITIONS:-3}
 VARIANT_ORDER=${YANPLUS_VARIANT_ORDER:-"origin yanplus"}
 REWRITER_SELECTION=${YANPLUS_REWRITER_SUITES:-dsb}
@@ -316,7 +316,7 @@ Environment:
   YANPLUS_DATABASE_ROOT   directory containing graph_db, lsqb_db, dsb_db,
                           tpch_db, and job_db (default: repository root)
   YANPLUS_THREADS         DuckDB threads (default: 64)
-  YANPLUS_CPU_LIST        taskset CPU list (default: 0-63)
+  YANPLUS_CPU_LIST        taskset CPU list (default: 0-31,36-67)
   YANPLUS_REPETITIONS     measured repetitions per query (default: 3)
   YANPLUS_VARIANT_ORDER   "origin yanplus" or "yanplus origin"
   YANPLUS_REWRITER_SUITES rewriter suites: none, all, dsb, or explicit suite
