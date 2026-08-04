@@ -184,12 +184,15 @@ not affect Yan+ or rewriter runs. The batch summary reports the runnable and
 skipped counts separately.
 
 Rewriter is a SQL-query baseline, not a third DuckDB build. It runs the
-generated `*_rewrite` SQL with `build/duckdb_origin/duckdb`. Setup
+committed `*_rewrite` SQL with `build/duckdb_origin/duckdb`. Setup
 `CREATE VIEW` statements are made temporary and run outside the timed region;
 the final rewritten query receives the same warm-up and timed repetitions as
 origin and Yan+. The default rewriter selection is `dsb`, currently six
 `dsb_agg_rewrite` queries and five `dsb_spj_rewrite` queries. DSB SPJ query 99
 has no committed rewrite, and there is no committed JOB rewrite suite.
+`batch_run.sh` executes these existing rewritten SQL files; it does not generate
+new rewritten SQL. Results are written inside each `*_rewrite` directory as
+`log_<query>_rewriter.txt` and `time_<query>_rewriter.txt`.
 
 The database files default to the repository root and must be named
 `graph_db`, `lsqb_db`, `dsb_db`, `tpch_db`, and `job_db`. Override their
@@ -203,6 +206,15 @@ YANPLUS_REPETITIONS=1 ./batch_run.sh lsqb tpch
 Select or skip rewriter benchmarks independently:
 
 ```sh
+# Run only the default DSB aggregate and SPJ rewrites.
+./batch_run.sh --rewriter-only
+
+# Run only every selected rewrite artifact, with no origin or Yan+ runs.
+./batch_run.sh --rewriter-only --rewriter=all
+
+# Run only the Graph rewrite suite.
+./batch_run.sh --rewriter-only --rewriter=graph graph
+
 # Disable all rewritten-query runs.
 ./batch_run.sh --no-rewriter
 
@@ -218,10 +230,13 @@ Select or skip rewriter benchmarks independently:
 suites from that selection. The equivalent environment controls are
 `YANPLUS_REWRITER_SUITES` and `YANPLUS_REWRITER_SKIP`, using space-separated
 values. Command-line options override them. Rewriter runs only for suites also
-selected on the `batch_run.sh` command line. Non-DSB rewrite directories are
-opt-in research artifacts; some contain alternative decompositions or depend
-on externally created views. The runner executes them verbatim and stops
-loudly on invalid SQL or a missing dependency.
+selected on the `batch_run.sh` command line. `--rewriter-only` skips preflight
+and execution for both compiled variants and requires only the active rewrite
+directories, their databases, and the origin-compatible rewriter binary.
+Non-DSB rewrite directories are opt-in research artifacts; some contain
+alternative decompositions or depend on externally created views. The runner
+executes them verbatim and reports invalid SQL or missing dependencies as
+failures.
 
 Override the origin-only skip list with one or more `--skip-origin` options:
 

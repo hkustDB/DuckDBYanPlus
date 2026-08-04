@@ -14,25 +14,14 @@ REWRITER_SELECTION=${YANPLUS_REWRITER_SUITES:-dsb}
 REWRITER_SKIP_SELECTION=${YANPLUS_REWRITER_SKIP:-}
 ORIGIN_SKIP_SELECTION=${YANPLUS_ORIGIN_SKIP:-"graph:q4,q5,q7 lsqb:q8,q9"}
 ORIGIN_SKIP_CLI_SET=0
+REWRITER_ONLY=0
+VARIANTS=()
 
 if [[ ! -d "${DATABASE_ROOT}" ]]; then
     echo "Error: database root does not exist: ${DATABASE_ROOT}" >&2
     exit 1
 fi
 DATABASE_ROOT=$(cd -- "${DATABASE_ROOT}" && pwd)
-read -r -a VARIANTS <<<"${VARIANT_ORDER}"
-if [[ ${#VARIANTS[@]} -ne 2 ]]; then
-    echo "Error: YANPLUS_VARIANT_ORDER must contain 'origin yanplus' in either order." >&2
-    exit 1
-fi
-case "${VARIANTS[0]}:${VARIANTS[1]}" in
-origin:yanplus | yanplus:origin)
-    ;;
-*)
-    echo "Error: YANPLUS_VARIANT_ORDER must contain 'origin yanplus' in either order." >&2
-    exit 1
-    ;;
-esac
 
 ALL_SUITES=(graph lsqb dsb_agg dsb_spj tpch job)
 ALL_REWRITER_SUITES=(graph lsqb dsb_agg dsb_spj tpch)
@@ -297,6 +286,7 @@ rewriter_enabled_for_suite() {
 usage() {
     cat >&2 <<EOF
 Usage: $0 [--rewriter=SELECTION] [--skip-rewriter=SELECTION]
+          [--rewriter-only]
           [--skip-origin=SUITE:QUERY,...] [--no-origin-skip]
           [graph|lsqb|dsb_agg|dsb_spj|tpch|job ...]
 
@@ -309,6 +299,7 @@ Options:
   --rewriter=SELECTION       override the rewriter suite selection
   --skip-rewriter=SELECTION  remove suites from the rewriter selection
   --no-rewriter              disable all rewritten-query runs
+  --rewriter-only            run rewritten SQL only; skip origin and Yan+
   --skip-origin=GROUP        replace defaults with suite:query[,query]; repeatable
   --no-origin-skip           run every selected query with origin
 
@@ -346,6 +337,9 @@ for argument in "$@"; do
     --no-rewriter)
         REWRITER_SELECTION=none
         ;;
+    --rewriter-only | --rewrite-only)
+        REWRITER_ONLY=1
+        ;;
     --skip-origin=*)
         origin_skip_value=${argument#*=}
         if [[ -z "${origin_skip_value}" ]]; then
@@ -374,11 +368,41 @@ for argument in "$@"; do
     esac
 done
 
-if ((${#SELECTED_SUITES[@]} == 0)); then
-    SELECTED_SUITES=("${ALL_SUITES[@]}")
-fi
 configure_rewriter_suites
-configure_origin_skips
+if ((${#SELECTED_SUITES[@]} == 0)); then
+    if ((REWRITER_ONLY != 0)); then
+        if ((${#REWRITER_SUITES[@]} > 0)); then
+            SELECTED_SUITES=("${REWRITER_SUITES[@]}")
+        else
+            SELECTED_SUITES=()
+        fi
+    else
+        SELECTED_SUITES=("${ALL_SUITES[@]}")
+    fi
+fi
+
+if ((REWRITER_ONLY != 0)); then
+    if ((${#REWRITER_SUITES[@]} == 0)); then
+        echo "Error: --rewriter-only selected no rewriter suites." >&2
+        echo "Use --rewriter=dsb, --rewriter=all, or an explicit rewriter selection." >&2
+        exit 1
+    fi
+else
+    read -r -a VARIANTS <<<"${VARIANT_ORDER}"
+    if [[ ${#VARIANTS[@]} -ne 2 ]]; then
+        echo "Error: YANPLUS_VARIANT_ORDER must contain 'origin yanplus' in either order." >&2
+        exit 1
+    fi
+    case "${VARIANTS[0]}:${VARIANTS[1]}" in
+    origin:yanplus | yanplus:origin)
+        ;;
+    *)
+        echo "Error: YANPLUS_VARIANT_ORDER must contain 'origin yanplus' in either order." >&2
+        exit 1
+        ;;
+    esac
+    configure_origin_skips
+fi
 
 if [[ ! -x "${AUTO_RUN}" ]]; then
     echo "Error: auto runner is not executable: ${AUTO_RUN}" >&2
@@ -391,20 +415,22 @@ TOTAL_YANPLUS_QUERIES=0
 TOTAL_ORIGIN_SKIPPED=0
 TOTAL_REWRITER_QUERIES=0
 ACTIVE_REWRITER_SUITES=()
-for variant in "${VARIANTS[@]}"; do
-    if [[ "${variant}" == origin ]]; then
-        binary=${DUCKDB_ORIGIN_BIN:-"${SCRIPT_PATH}/build/duckdb_origin/duckdb"}
-    else
-        binary=${DUCKDB_YANPLUS_BIN:-"${SCRIPT_PATH}/build/duckdb_YanPlus/duckdb"}
-    fi
-    if [[ "${binary}" != /* ]]; then
-        binary="${SCRIPT_PATH}/${binary}"
-    fi
-    if [[ ! -x "${binary}" ]]; then
-        echo "Error: missing ${variant} executable: ${binary}" >&2
-        PREFLIGHT_FAILED=1
-    fi
-done
+if ((REWRITER_ONLY == 0)); then
+    for variant in "${VARIANTS[@]}"; do
+        if [[ "${variant}" == origin ]]; then
+            binary=${DUCKDB_ORIGIN_BIN:-"${SCRIPT_PATH}/build/duckdb_origin/duckdb"}
+        else
+            binary=${DUCKDB_YANPLUS_BIN:-"${SCRIPT_PATH}/build/duckdb_YanPlus/duckdb"}
+        fi
+        if [[ "${binary}" != /* ]]; then
+            binary="${SCRIPT_PATH}/${binary}"
+        fi
+        if [[ ! -x "${binary}" ]]; then
+            echo "Error: missing ${variant} executable: ${binary}" >&2
+            PREFLIGHT_FAILED=1
+        fi
+    done
+fi
 
 for suite in "${SELECTED_SUITES[@]}"; do
     if ! database_name=$(suite_database "${suite}"); then
@@ -412,35 +438,41 @@ for suite in "${SELECTED_SUITES[@]}"; do
         usage
         exit 1
     fi
-    query_directory=$(suite_directory "${suite}")
-    query_dir="${SCRIPT_PATH}/${query_directory}"
     database_path="${DATABASE_ROOT}/${database_name}_db"
-    if [[ ! -d "${query_dir}" ]]; then
-        echo "Error: missing query directory for ${suite}: ${query_dir}" >&2
-        PREFLIGHT_FAILED=1
-    else
-        query_count=$(find "${query_dir}" -maxdepth 1 -type f -name '*.sql' | wc -l | tr -d '[:space:]')
-        if [[ "${query_count}" == 0 ]]; then
-            echo "Error: no SQL files found for ${suite}: ${query_dir}" >&2
+    if ((REWRITER_ONLY != 0)) && ! rewriter_enabled_for_suite "${suite}"; then
+        continue
+    fi
+
+    if ((REWRITER_ONLY == 0)); then
+        query_directory=$(suite_directory "${suite}")
+        query_dir="${SCRIPT_PATH}/${query_directory}"
+        if [[ ! -d "${query_dir}" ]]; then
+            echo "Error: missing query directory for ${suite}: ${query_dir}" >&2
             PREFLIGHT_FAILED=1
         else
-            origin_skip_queries=$(origin_skip_queries_for_suite "${suite}")
-            origin_skip_query_names=()
-            read -r -a origin_skip_query_names <<<"${origin_skip_queries}"
-            suite_origin_skip_count=0
-            if ((${#origin_skip_query_names[@]} > 0)); then
-                for skip_query_name in "${origin_skip_query_names[@]}"; do
-                    if [[ ! -f "${query_dir}/${skip_query_name}.sql" ]]; then
-                        echo "Error: origin skip query does not exist for ${suite}: ${query_dir}/${skip_query_name}.sql" >&2
-                        PREFLIGHT_FAILED=1
-                    else
-                        suite_origin_skip_count=$((suite_origin_skip_count + 1))
-                    fi
-                done
+            query_count=$(find "${query_dir}" -maxdepth 1 -type f -name '*.sql' | wc -l | tr -d '[:space:]')
+            if [[ "${query_count}" == 0 ]]; then
+                echo "Error: no SQL files found for ${suite}: ${query_dir}" >&2
+                PREFLIGHT_FAILED=1
+            else
+                origin_skip_queries=$(origin_skip_queries_for_suite "${suite}")
+                origin_skip_query_names=()
+                read -r -a origin_skip_query_names <<<"${origin_skip_queries}"
+                suite_origin_skip_count=0
+                if ((${#origin_skip_query_names[@]} > 0)); then
+                    for skip_query_name in "${origin_skip_query_names[@]}"; do
+                        if [[ ! -f "${query_dir}/${skip_query_name}.sql" ]]; then
+                            echo "Error: origin skip query does not exist for ${suite}: ${query_dir}/${skip_query_name}.sql" >&2
+                            PREFLIGHT_FAILED=1
+                        else
+                            suite_origin_skip_count=$((suite_origin_skip_count + 1))
+                        fi
+                    done
+                fi
+                TOTAL_YANPLUS_QUERIES=$((TOTAL_YANPLUS_QUERIES + query_count))
+                TOTAL_ORIGIN_QUERIES=$((TOTAL_ORIGIN_QUERIES + query_count - suite_origin_skip_count))
+                TOTAL_ORIGIN_SKIPPED=$((TOTAL_ORIGIN_SKIPPED + suite_origin_skip_count))
             fi
-            TOTAL_YANPLUS_QUERIES=$((TOTAL_YANPLUS_QUERIES + query_count))
-            TOTAL_ORIGIN_QUERIES=$((TOTAL_ORIGIN_QUERIES + query_count - suite_origin_skip_count))
-            TOTAL_ORIGIN_SKIPPED=$((TOTAL_ORIGIN_SKIPPED + suite_origin_skip_count))
         fi
     fi
     if [[ ! -f "${database_path}" ]]; then
@@ -467,6 +499,12 @@ for suite in "${SELECTED_SUITES[@]}"; do
     fi
 done
 
+if ((REWRITER_ONLY != 0 && TOTAL_REWRITER_QUERIES == 0)); then
+    echo "Error: --rewriter-only found no active rewritten queries." >&2
+    echo "The positional suites and --rewriter selection must overlap." >&2
+    PREFLIGHT_FAILED=1
+fi
+
 if ((TOTAL_REWRITER_QUERIES > 0)); then
     rewriter_binary=${DUCKDB_REWRITER_BIN:-${DUCKDB_ORIGIN_BIN:-"${SCRIPT_PATH}/build/duckdb_origin/duckdb"}}
     if [[ "${rewriter_binary}" != /* ]]; then
@@ -479,14 +517,24 @@ if ((TOTAL_REWRITER_QUERIES > 0)); then
 fi
 
 if ((PREFLIGHT_FAILED != 0)); then
-    echo "Preflight failed. Build both variants and place the database files before running the batch." >&2
+    if ((REWRITER_ONLY != 0)); then
+        echo "Preflight failed. Provide the rewriter binary, active rewrite directories, and databases." >&2
+    else
+        echo "Preflight failed. Build both variants and place the database files before running the batch." >&2
+    fi
     exit 1
 fi
 
 echo "Suites: ${SELECTED_SUITES[*]}"
-echo "Origin queries: ${TOTAL_ORIGIN_QUERIES} (${TOTAL_ORIGIN_SKIPPED} skipped)"
-echo "Yan+ queries: ${TOTAL_YANPLUS_QUERIES}"
-echo "Compiled binary/query pairs: $((TOTAL_ORIGIN_QUERIES + TOTAL_YANPLUS_QUERIES))"
+if ((REWRITER_ONLY != 0)); then
+    echo "Run mode: rewriter-only"
+    echo "Compiled variants: disabled (--rewriter-only)"
+else
+    echo "Run mode: compiled variants plus selected rewrites"
+    echo "Origin queries: ${TOTAL_ORIGIN_QUERIES} (${TOTAL_ORIGIN_SKIPPED} skipped)"
+    echo "Yan+ queries: ${TOTAL_YANPLUS_QUERIES}"
+    echo "Compiled binary/query pairs: $((TOTAL_ORIGIN_QUERIES + TOTAL_YANPLUS_QUERIES))"
+fi
 if ((TOTAL_REWRITER_QUERIES > 0)); then
     echo "Rewriter suites: ${ACTIVE_REWRITER_SUITES[*]}"
     echo "Rewriter queries: ${TOTAL_REWRITER_QUERIES}"
@@ -497,7 +545,9 @@ echo "Total query configurations: $((TOTAL_ORIGIN_QUERIES + TOTAL_YANPLUS_QUERIE
 echo "Threads: ${NUM_THREADS}"
 echo "CPU list: ${CPU_LIST}"
 echo "Repetitions: ${REPETITIONS}"
-echo "Variant order: ${VARIANTS[*]}"
+if ((REWRITER_ONLY == 0)); then
+    echo "Variant order: ${VARIANTS[*]}"
+fi
 
 FAILED_RUN_LABELS=()
 FAILED_RUN_STATUSES=()
@@ -515,33 +565,35 @@ record_failed_run() {
 
 for suite in "${SELECTED_SUITES[@]}"; do
     database_name=$(suite_database "${suite}")
-    query_directory=$(suite_directory "${suite}")
     database_path="${DATABASE_ROOT}/${database_name}_db"
-    query_dir="${SCRIPT_PATH}/${query_directory}"
-    for variant in "${VARIANTS[@]}"; do
-        echo
-        echo "Starting ${suite} with ${variant}"
-        if [[ "${variant}" == origin ]]; then
-            origin_skip_queries=$(origin_skip_queries_for_suite "${suite}")
-            if YANPLUS_ORIGIN_SKIP_QUERIES="${origin_skip_queries}" \
-                "${AUTO_RUN}" "${database_path}" "${query_dir}" "${variant}" \
-                "${NUM_THREADS}" "${CPU_LIST}" "${REPETITIONS}"; then
-                :
+    if ((REWRITER_ONLY == 0)); then
+        query_directory=$(suite_directory "${suite}")
+        query_dir="${SCRIPT_PATH}/${query_directory}"
+        for variant in "${VARIANTS[@]}"; do
+            echo
+            echo "Starting ${suite} with ${variant}"
+            if [[ "${variant}" == origin ]]; then
+                origin_skip_queries=$(origin_skip_queries_for_suite "${suite}")
+                if YANPLUS_ORIGIN_SKIP_QUERIES="${origin_skip_queries}" \
+                    "${AUTO_RUN}" "${database_path}" "${query_dir}" "${variant}" \
+                    "${NUM_THREADS}" "${CPU_LIST}" "${REPETITIONS}"; then
+                    :
+                else
+                    run_status=$?
+                    record_failed_run "${suite}:${variant}" "${run_status}"
+                fi
             else
-                run_status=$?
-                record_failed_run "${suite}:${variant}" "${run_status}"
+                if YANPLUS_ORIGIN_SKIP_QUERIES= \
+                    "${AUTO_RUN}" "${database_path}" "${query_dir}" "${variant}" \
+                    "${NUM_THREADS}" "${CPU_LIST}" "${REPETITIONS}"; then
+                    :
+                else
+                    run_status=$?
+                    record_failed_run "${suite}:${variant}" "${run_status}"
+                fi
             fi
-        else
-            if YANPLUS_ORIGIN_SKIP_QUERIES= \
-                "${AUTO_RUN}" "${database_path}" "${query_dir}" "${variant}" \
-                "${NUM_THREADS}" "${CPU_LIST}" "${REPETITIONS}"; then
-                :
-            else
-                run_status=$?
-                record_failed_run "${suite}:${variant}" "${run_status}"
-            fi
-        fi
-    done
+        done
+    fi
     if rewriter_enabled_for_suite "${suite}"; then
         rewrite_directory=$(rewriter_suite_directory "${suite}")
         rewrite_dir="${SCRIPT_PATH}/${rewrite_directory}"
