@@ -1,0 +1,32 @@
+# name: benchmark/yanplus/semijoin_filter_acyclic_skewed_star_hash.benchmark
+# description: Skewed four-relation acyclic star using an exact Hash semi-join filter
+# group: [yanplus]
+
+name Yan+ skewed acyclic star semi-join (Hash)
+group yanplus
+subgroup semijoin_filter
+
+load
+SET yanplus_enable = true;
+SET yanplus_cyclic_bags = true;
+SET yanplus_semijoin_filter = 'hash';
+CREATE TABLE yan_star_fact AS
+    SELECT i::INTEGER AS id,
+           (i % 100)::INTEGER AS k1,
+           (i % 80)::INTEGER AS k2,
+           (i % 50)::INTEGER AS k3
+    FROM range(1000000) t(i);
+CREATE TABLE yan_star_dim1 AS
+    SELECT i::INTEGER AS k1, (i % 2)::INTEGER AS flag1 FROM range(100) t(i);
+CREATE TABLE yan_star_dim2 AS
+    SELECT i::INTEGER AS k2, (i % 4)::INTEGER AS flag2 FROM range(80) t(i);
+CREATE TABLE yan_star_dim3 AS
+    SELECT i::INTEGER AS k3, (i % 5)::INTEGER AS flag3 FROM range(50) t(i);
+
+run
+SELECT f.id, d1.k1, d2.k2, d3.k3
+FROM yan_star_fact f
+JOIN yan_star_dim1 d1 ON f.k1 = d1.k1
+JOIN yan_star_dim2 d2 ON f.k2 = d2.k2
+JOIN yan_star_dim3 d3 ON f.k3 = d3.k3
+WHERE d1.flag1 = 0 AND d2.flag2 = 0 AND d3.flag3 = 0;

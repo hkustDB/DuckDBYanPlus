@@ -1,0 +1,189 @@
+# name: test/sql/optimizer/plan/test_yanplus_semijoin_filter_workloads.test
+# description: Expanded Bloom/Hash workloads retain their expected Yan+ filter topology
+# group: [plan]
+
+require yanplus
+
+statement ok
+SET threads = 1
+
+statement ok
+SET yanplus_enable = true
+
+statement ok
+SET yanplus_cyclic_bags = true
+
+# A selective acyclic chain should propagate three single-key filters.
+statement ok
+CREATE TABLE workload_chain_seed AS
+SELECT i::BIGINT AS k1 FROM range(100) t(i)
+
+statement ok
+CREATE TABLE workload_chain_l1 AS
+SELECT (i % 100)::BIGINT AS k1, i::BIGINT AS k2 FROM range(1000) t(i)
+
+statement ok
+CREATE TABLE workload_chain_l2 AS
+SELECT (i % 1000)::BIGINT AS k2, i::BIGINT AS k3 FROM range(2000) t(i)
+
+statement ok
+CREATE TABLE workload_chain_fact AS
+SELECT (i % 2000)::BIGINT AS k3, i::BIGINT AS payload FROM range(4000) t(i)
+
+statement ok
+SET yanplus_semijoin_filter = 'bloom'
+
+query II
+EXPLAIN SELECT f.payload
+FROM workload_chain_seed d
+JOIN workload_chain_l1 l1 ON d.k1 = l1.k1
+JOIN workload_chain_l2 l2 ON l1.k2 = l2.k2
+JOIN workload_chain_fact f ON l2.k3 = f.k3
+WHERE d.k1 < 5
+----
+physical_plan	<REGEX>:.*CREATE_BF.*CREATE_BF.*CREATE_BF.*
+
+query II
+EXPLAIN SELECT f.payload
+FROM workload_chain_seed d
+JOIN workload_chain_l1 l1 ON d.k1 = l1.k1
+JOIN workload_chain_l2 l2 ON l1.k2 = l2.k2
+JOIN workload_chain_fact f ON l2.k3 = f.k3
+WHERE d.k1 < 5
+----
+physical_plan	<REGEX>:.*USE_BF.*USE_BF.*USE_BF.*Semi-Join Filter Type:.*BLOOM.*
+
+statement ok
+SET yanplus_semijoin_filter = 'hash'
+
+query II
+EXPLAIN SELECT f.payload
+FROM workload_chain_seed d
+JOIN workload_chain_l1 l1 ON d.k1 = l1.k1
+JOIN workload_chain_l2 l2 ON l1.k2 = l2.k2
+JOIN workload_chain_fact f ON l2.k3 = f.k3
+WHERE d.k1 < 5
+----
+physical_plan	<REGEX>:.*CREATE_BF.*CREATE_BF.*CREATE_BF.*
+
+query II
+EXPLAIN SELECT f.payload
+FROM workload_chain_seed d
+JOIN workload_chain_l1 l1 ON d.k1 = l1.k1
+JOIN workload_chain_l2 l2 ON l1.k2 = l2.k2
+JOIN workload_chain_fact f ON l2.k3 = f.k3
+WHERE d.k1 < 5
+----
+physical_plan	<REGEX>:.*USE_BF.*USE_BF.*USE_BF.*Semi-Join Filter Type:.*HASH.*
+
+# Three filtered dimensions should create three fan-in filters over one fact.
+statement ok
+CREATE TABLE workload_star_fact AS
+SELECT i::INTEGER AS id, (i % 100)::INTEGER AS k1,
+       (i % 80)::INTEGER AS k2, (i % 50)::INTEGER AS k3
+FROM range(1000) t(i)
+
+statement ok
+CREATE TABLE workload_star_dim1 AS
+SELECT i::INTEGER AS k1, (i % 2)::INTEGER AS flag1 FROM range(100) t(i)
+
+statement ok
+CREATE TABLE workload_star_dim2 AS
+SELECT i::INTEGER AS k2, (i % 4)::INTEGER AS flag2 FROM range(80) t(i)
+
+statement ok
+CREATE TABLE workload_star_dim3 AS
+SELECT i::INTEGER AS k3, (i % 5)::INTEGER AS flag3 FROM range(50) t(i)
+
+statement ok
+SET yanplus_semijoin_filter = 'bloom'
+
+query II
+EXPLAIN SELECT f.id, d1.k1, d2.k2, d3.k3
+FROM workload_star_fact f
+JOIN workload_star_dim1 d1 ON f.k1 = d1.k1
+JOIN workload_star_dim2 d2 ON f.k2 = d2.k2
+JOIN workload_star_dim3 d3 ON f.k3 = d3.k3
+WHERE d1.flag1 = 0 AND d2.flag2 = 0 AND d3.flag3 = 0
+----
+physical_plan	<REGEX>:.*CREATE_BF.*CREATE_BF.*CREATE_BF.*
+
+query II
+EXPLAIN SELECT f.id, d1.k1, d2.k2, d3.k3
+FROM workload_star_fact f
+JOIN workload_star_dim1 d1 ON f.k1 = d1.k1
+JOIN workload_star_dim2 d2 ON f.k2 = d2.k2
+JOIN workload_star_dim3 d3 ON f.k3 = d3.k3
+WHERE d1.flag1 = 0 AND d2.flag2 = 0 AND d3.flag3 = 0
+----
+physical_plan	<REGEX>:.*USE_BF.*USE_BF.*USE_BF.*Semi-Join Filter Type:.*BLOOM.*
+
+statement ok
+SET yanplus_semijoin_filter = 'hash'
+
+query II
+EXPLAIN SELECT f.id, d1.k1, d2.k2, d3.k3
+FROM workload_star_fact f
+JOIN workload_star_dim1 d1 ON f.k1 = d1.k1
+JOIN workload_star_dim2 d2 ON f.k2 = d2.k2
+JOIN workload_star_dim3 d3 ON f.k3 = d3.k3
+WHERE d1.flag1 = 0 AND d2.flag2 = 0 AND d3.flag3 = 0
+----
+physical_plan	<REGEX>:.*CREATE_BF.*CREATE_BF.*CREATE_BF.*
+
+query II
+EXPLAIN SELECT f.id, d1.k1, d2.k2, d3.k3
+FROM workload_star_fact f
+JOIN workload_star_dim1 d1 ON f.k1 = d1.k1
+JOIN workload_star_dim2 d2 ON f.k2 = d2.k2
+JOIN workload_star_dim3 d3 ON f.k3 = d3.k3
+WHERE d1.flag1 = 0 AND d2.flag2 = 0 AND d3.flag3 = 0
+----
+physical_plan	<REGEX>:.*USE_BF.*USE_BF.*USE_BF.*Semi-Join Filter Type:.*HASH.*
+
+# A four-cycle plus a tail should keep one plan-derived GHD bag boundary.
+statement ok
+CREATE TABLE workload_cycle_r AS
+SELECT (i % 500)::INTEGER AS a, i::INTEGER AS b FROM range(1000) t(i)
+
+statement ok
+CREATE TABLE workload_cycle_s AS
+SELECT i::INTEGER AS b, i::INTEGER AS c FROM range(1000) t(i)
+
+statement ok
+CREATE TABLE workload_cycle_t AS
+SELECT i::INTEGER AS c, i::INTEGER AS d FROM range(1000) t(i)
+
+statement ok
+CREATE TABLE workload_cycle_u AS
+SELECT (i * 8)::INTEGER AS d, ((i * 8) % 500)::INTEGER AS a FROM range(125) t(i)
+
+statement ok
+CREATE TABLE workload_cycle_tail AS
+SELECT (i * 16)::INTEGER AS a, i::INTEGER AS payload FROM range(32) t(i)
+
+statement ok
+SET yanplus_semijoin_filter = 'bloom'
+
+query II
+EXPLAIN SELECT r.a, r.b, t.d, tail.payload
+FROM workload_cycle_r r
+JOIN workload_cycle_s s ON r.b = s.b
+JOIN workload_cycle_t t ON s.c = t.c
+JOIN workload_cycle_u u ON t.d = u.d AND r.a = u.a
+JOIN workload_cycle_tail tail ON r.a = tail.a
+----
+physical_plan	<REGEX>:.*(USE_BF.*CREATE_BF|CREATE_BF.*USE_BF).*Semi-Join Filter Type:.*BLOOM.*
+
+statement ok
+SET yanplus_semijoin_filter = 'hash'
+
+query II
+EXPLAIN SELECT r.a, r.b, t.d, tail.payload
+FROM workload_cycle_r r
+JOIN workload_cycle_s s ON r.b = s.b
+JOIN workload_cycle_t t ON s.c = t.c
+JOIN workload_cycle_u u ON t.d = u.d AND r.a = u.a
+JOIN workload_cycle_tail tail ON r.a = tail.a
+----
+physical_plan	<REGEX>:.*(USE_BF.*CREATE_BF|CREATE_BF.*USE_BF).*Semi-Join Filter Type:.*HASH.*

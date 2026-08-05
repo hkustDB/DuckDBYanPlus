@@ -1,0 +1,35 @@
+# name: benchmark/yanplus/semijoin_filter_cyclic_wide_composite_hash.benchmark
+# description: Large mixed-type composite-key cycle using an exact Hash semi-join filter
+# group: [yanplus]
+
+name Yan+ large wide composite cyclic semi-join (Hash)
+group yanplus
+subgroup semijoin_filter
+
+load
+SET yanplus_enable = true;
+SET yanplus_cyclic_bags = true;
+SET yanplus_semijoin_filter = 'hash';
+CREATE TABLE yan_wide_r AS
+    SELECT printf('a%08d', (i % 1200000) % 600000) AS a,
+           (CASE WHEN (i % 1200000) % 100 = 0
+                 THEN 2 * (i % 1200000)
+                 ELSE 2 * (i % 1200000) + 1 END)::BIGINT AS b
+    FROM range(2400000) t(i);
+CREATE TABLE yan_wide_s AS
+    SELECT (2 * i)::BIGINT AS b,
+           printf('c%08d', i % 600000) AS c
+    FROM range(1200000) t(i);
+CREATE TABLE yan_wide_t AS
+    SELECT printf('c%08d', i) AS c,
+           printf('a%08d', i) AS a
+    FROM range(600000) t(i);
+
+run
+SELECT count(*)
+FROM yan_wide_r r
+JOIN yan_wide_s s ON r.b = s.b
+JOIN yan_wide_t t ON s.c = t.c AND r.a = t.a;
+
+result I
+24000

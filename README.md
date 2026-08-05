@@ -154,16 +154,21 @@ when a strict source-clean upstream binary is required.
 ## Benchmark
 
 The reproducible Bloom-versus-Hash experiment is documented in
-[`benchmark/yanplus/README.md`](benchmark/yanplus/README.md). It runs the same cyclic
-query and plan with only the semi-join-filter backend changed.
+[`benchmark/yanplus/README.md`](benchmark/yanplus/README.md). It covers six
+paired workloads: acyclic chain and star plans, three- and four-relation cyclic
+plans, a large mixed-type composite separator, and duplicate-heavy skew. Only
+the semi-join-filter backend changes within each pair. One invocation measures
+both backends under two fixed-affinity profiles: one thread on CPU `0`, and 64
+threads on CPUs `0-31,36-67`. The default combined CSV has 24 result rows and
+records workload metadata, configuration, thread count, and CPU mask.
 
-On the 72-logical-CPU experiment host, all provided experiment launchers use
-64 DuckDB threads and Linux `taskset --cpu-list 0-31,36-67`. Thus logical
-CPUs 32–35 and 68–71 are excluded. The query-suite launchers disable internal
-pinning and rebuild the worker pool before timing. The v1.5 scheduler also maps
-automatic startup pinning onto the inherited allowed-CPU mask instead of
-global sequential CPU IDs, which keeps the benchmark runner inside the same
-mask.
+On the 72-logical-CPU experiment host, the multi-thread profile and the query
+suite launchers use 64 DuckDB threads with Linux
+`taskset --cpu-list 0-31,36-67`. Thus logical CPUs 32–35 and 68–71 are excluded.
+The query-suite launchers disable internal pinning and rebuild the worker pool
+before timing. The v1.5 scheduler also maps automatic startup pinning onto the
+inherited allowed-CPU mask instead of global sequential CPU IDs, which keeps
+the benchmark runner inside the same mask.
 
 ```sh
 python3 benchmark/yanplus/compare_semijoin_filters.py \
@@ -180,8 +185,8 @@ variants, plus the committed DSB rewritten queries:
 
 By default, Yan+ runs every selected query, while origin skips Graph
 `q4`, `q5`, and `q7`, plus LSQB `q8` and `q9`. These origin-only exclusions do
-not affect Yan+ or rewriter runs. The batch summary reports the runnable and
-skipped counts separately.
+not affect Yan+, rewriter, or Yannakakis-only runs. The batch summary reports
+the runnable and skipped counts separately.
 
 Rewriter is a SQL-query baseline, not a third DuckDB build. It runs the
 committed `*_rewrite` SQL with `build/duckdb_origin/duckdb`. Setup
@@ -189,7 +194,7 @@ committed `*_rewrite` SQL with `build/duckdb_origin/duckdb`. Setup
 the final rewritten query receives the same warm-up and timed repetitions as
 origin and Yan+. The default rewriter selection is `dsb`, currently six
 `dsb_agg_rewrite` queries and five `dsb_spj_rewrite` queries. DSB SPJ query 99
-has no committed rewrite, and there is no committed JOB rewrite suite.
+has no committed rewrite, and there is no JOB suite in this existing baseline.
 `batch_run.sh` executes these existing rewritten SQL files; it does not generate
 new rewritten SQL. Results are written inside each `*_rewrite` directory as
 `log_<query>_rewriter.txt` and `time_<query>_rewriter.txt`.
@@ -238,6 +243,101 @@ alternative decompositions or depend on externally created views. The runner
 executes them verbatim and reports invalid SQL or missing dependencies as
 failures.
 
+### Yannakakis-style (`rewriteYa`) baseline
+
+The Yannakakis-style rewrites are a separate, opt-in baseline based on
+Quorion's `reproducibility` branch at commit
+`3e48996acc152fc1b19c780ab5c0c9f5f6885e33`. An unchanged `rewriteYa*.sql` is
+copied only when the local and Quorion originals have the same normalized SQL
+tokens. Query-specific DuckDB adaptations and locally simulated fallbacks are
+recorded separately rather than weakening that source-match rule. The complete
+source paths, normalized hashes, generation method, and decisions are in
+[`yannakakis_rewrite_manifest.tsv`](yannakakis_rewrite_manifest.tsv).
+
+Graph, LSQB, TPC-H, and JOB have dedicated `*_yannakakis_rewrite` directories.
+JOB is generated from the local `job_agg` queries using DuckDB semantics. A
+literal replacement of `MIN(value)` with `SUM(value)` is not valid because most
+JOB payload values are `VARCHAR`. Instead, each JOB artifact performs an
+upward and downward `EXISTS` semijoin pass, preserves base-row multiplicity,
+then executes the local grouping columns with `SUM(1) AS record_count` over the
+reduced relations. Every original predicate is retained in the final join, so
+the rewrite has the same bag semantics as `job_agg`. Cyclic alias graphs use a
+deterministic spanning-tree reduction; non-tree predicates remain in the final
+join, making this a safe partial, Yannakakis-style reduction rather than a claim
+of complete cyclic reduction.
+
+Quorion's 282 JOB `rewriteYa` filenames define the generated variant set. JOB
+1a has no upstream `rewriteYa`, so one local DuckDB fallback is generated. This
+gives 283 nonempty JOB artifacts and at least one rewrite for every one of the
+113 JOB queries. Generated SQL uses the local aliases, which removes upstream
+differences such as `character` versus `character1`. JOB timings therefore
+compare directly with `job_agg` and the normal JOB origin/Yan+ runs.
+
+Coverage is complete for all four suites:
+
+- Graph has six locally simulated two-pass reducers. Its copied cyclic q4 bag
+  plan is retained, with an empty-input fix so its annotation sum agrees with
+  `COUNT(*)`.
+- LSQB q4/q5/q7/q8 adapt the corresponding Quorion relation names to the local
+  `_T` schema. Cyclic q2 is represented as one GHD bag: there is no inter-bag
+  semijoin, and DuckDB executes the exact join inside that bag. BI-3 and BI-9
+  use local two-pass reducers; BI-3 retains the tag branch as `EXISTS`, and
+  BI-9 treats the grouped MPP CTE as one relation.
+- TPC-H q5/q10 use the local DuckDB date expressions, q5 repairs the two pinned
+  source projections that omitted the revenue column, and q16 restores the
+  local `NOT IN` supplier predicate with DuckDB NULL semantics. Q7 and q18 now
+  create their `lineitemwithyear` and `q18_inner` helpers inside each artifact.
+- Quorion annotation-based LSQB and Graph counts use
+  `COALESCE(SUM(annot), 0)`, matching DuckDB `COUNT(*)` on empty input.
+
+The current import contains 318 runnable artifacts for 137 originals and no
+blank placeholders. A simulated cyclic one-bag plan is an experiment-complete
+GHD fallback, not a claim that the importer enumerates or optimizes all GHDs.
+
+Run only this baseline with the origin-compatible binary:
+
+```sh
+# Run every runnable Graph, LSQB, TPC-H, and JOB rewriteYa artifact.
+./batch_run.sh --yannakakis-only
+
+# Run only JOB rewriteYa artifacts.
+./batch_run.sh --yannakakis-only --yannakakis=job job
+
+# Run the matching JOB SUM originals separately for a direct comparison.
+./auto_run.sh job job_agg origin 64 0-31,36-67 3
+
+# Run every supported rewriteYa suite except JOB.
+./batch_run.sh --yannakakis-only --skip-yannakakis=job
+```
+
+`--yannakakis` accepts `none`, `all`, `graph`, `lsqb`, `tpch`, `job`, or a
+comma-separated combination. The equivalent environment controls are
+`YANPLUS_YANNAKAKIS_SUITES` (default `all`) and
+`YANPLUS_YANNAKAKIS_SKIP`. `--yannakakis-only` and `--rewriter-only` are
+mutually exclusive; a normal `batch_run.sh` invocation remains unchanged and
+does not run this opt-in baseline. Results use the distinct
+`log_<artifact>_yannakakis.txt` and `time_<artifact>_yannakakis.txt` names.
+
+To reproduce or verify the import against a checkout of the pinned Quorion
+commit:
+
+```sh
+python3 scripts/import_yannakakis_rewrites.py /path/to/Quorion
+python3 scripts/import_yannakakis_rewrites.py --check /path/to/Quorion
+
+# Check per-query coverage, nonempty artifacts, and manifest consistency.
+python3 scripts/validate_yannakakis_coverage.py
+
+# Bind and EXPLAIN all JOB artifacts against an empty DuckDB JOB schema.
+python3 scripts/validate_job_yannakakis.py \
+    --duckdb build/duckdb_origin/duckdb
+
+# On the experiment machine, compare every result with job_agg using
+# bidirectional DuckDB EXCEPT ALL.
+python3 scripts/validate_job_yannakakis.py \
+    --duckdb build/duckdb_origin/duckdb --database ./job_db
+```
+
 Override the origin-only skip list with one or more `--skip-origin` options:
 
 ```sh
@@ -271,6 +371,7 @@ For one suite and one variant, call the underlying launcher directly:
 ./auto_run.sh lsqb lsqb origin 64 0-31,36-67 3
 ./auto_run.sh lsqb lsqb yanplus 64 0-31,36-67 3
 ./auto_run.sh dsb dsb_agg_rewrite rewriter 64 0-31,36-67 3
+./auto_run.sh lsqb lsqb_yannakakis_rewrite yannakakis 64 0-31,36-67 3
 ```
 
 For a direct origin run, pass query basenames for that one query directory:

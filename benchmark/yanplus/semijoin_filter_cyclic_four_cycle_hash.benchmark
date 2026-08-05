@@ -1,0 +1,33 @@
+# name: benchmark/yanplus/semijoin_filter_cyclic_four_cycle_hash.benchmark
+# description: Four-cycle with an acyclic tail using an exact Hash semi-join filter
+# group: [yanplus]
+
+name Yan+ four-cycle and tail semi-join (Hash)
+group yanplus
+subgroup semijoin_filter
+
+load
+SET yanplus_enable = true;
+SET yanplus_cyclic_bags = true;
+SET yanplus_semijoin_filter = 'hash';
+CREATE TABLE yan_cycle_r AS
+    SELECT (i % 500000)::INTEGER AS a, i::INTEGER AS b FROM range(1000000) t(i);
+CREATE TABLE yan_cycle_s AS
+    SELECT i::INTEGER AS b, i::INTEGER AS c FROM range(1000000) t(i);
+CREATE TABLE yan_cycle_t AS
+    SELECT i::INTEGER AS c, i::INTEGER AS d FROM range(1000000) t(i);
+CREATE TABLE yan_cycle_u AS
+    SELECT (i * 8)::INTEGER AS d, ((i * 8) % 500000)::INTEGER AS a FROM range(125000) t(i);
+CREATE TABLE yan_cycle_tail AS
+    SELECT (i * 16)::INTEGER AS a, i::INTEGER AS payload FROM range(31250) t(i);
+
+run
+SELECT count(*)
+FROM yan_cycle_r r
+JOIN yan_cycle_s s ON r.b = s.b
+JOIN yan_cycle_t t ON s.c = t.c
+JOIN yan_cycle_u u ON t.d = u.d AND r.a = u.a
+JOIN yan_cycle_tail tail ON r.a = tail.a;
+
+result I
+62500

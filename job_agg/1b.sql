@@ -15,4 +15,5 @@ WHERE ct.kind = 'production companies'
   AND t.id = mc.movie_id
   AND t.id = mi_idx.movie_id
   AND mc.movie_id = mi_idx.movie_id
+  AND it.id = mi_idx.info_type_id
 GROUP BY mc.note, t.title, t.production_year

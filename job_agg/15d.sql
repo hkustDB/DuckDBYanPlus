@@ -1,7 +1,7 @@
-SELECT ata.title,
+SELECT akt.title,
        t.title,
        SUM(1) AS record_count
-FROM aka_title AS ata,
+FROM aka_title AS akt,
      company_name AS cn,
      company_type AS ct,
      info_type AS it1,
@@ -14,18 +14,18 @@ WHERE cn.country_code = '[us]'
   AND it1.info = 'release dates'
   AND mi.note LIKE '%internet%'
   AND t.production_year > 1990
-  AND t.id = ata.movie_id
+  AND t.id = akt.movie_id
   AND t.id = mi.movie_id
   AND t.id = mk.movie_id
   AND t.id = mc.movie_id
   AND mk.movie_id = mi.movie_id
   AND mk.movie_id = mc.movie_id
-  AND mk.movie_id = ata.movie_id
+  AND mk.movie_id = akt.movie_id
   AND mi.movie_id = mc.movie_id
-  AND mi.movie_id = ata.movie_id
-  AND mc.movie_id = ata.movie_id
+  AND mi.movie_id = akt.movie_id
+  AND mc.movie_id = akt.movie_id
   AND k.id = mk.keyword_id
   AND it1.id = mi.info_type_id
   AND cn.id = mc.company_id
   AND ct.id = mc.company_type_id
-GROUP BY ata.title, t.title
+GROUP BY akt.title, t.title

@@ -1,0 +1,35 @@
+# name: benchmark/yanplus/semijoin_filter_cyclic_skew_duplicates_bloom.benchmark
+# description: Duplicate-heavy skewed cycle using the default Bloom semi-join filter
+# group: [yanplus]
+
+name Yan+ duplicate-skew cyclic semi-join (Bloom)
+group yanplus
+subgroup semijoin_filter
+
+load
+SET yanplus_enable = true;
+SET yanplus_cyclic_bags = true;
+SET yanplus_semijoin_filter = 'bloom';
+CREATE TABLE yan_skew_r AS
+    SELECT (CASE WHEN i < 65536
+                 THEN 2 * i
+                 ELSE 2 * ((i - 65536) % 65535) + 1 END)::BIGINT AS a,
+           (CASE WHEN i < 65536
+                 THEN 2 * i
+                 ELSE 2 * ((i - 65536) % 65535) + 1 END)::BIGINT AS b
+    FROM range(4000000) t(i);
+CREATE TABLE yan_skew_s AS
+    SELECT (2 * (i % 65536))::BIGINT AS b, i::BIGINT AS c
+    FROM range(2000000) t(i);
+CREATE TABLE yan_skew_t AS
+    SELECT i::BIGINT AS c, (2 * (i % 65536))::BIGINT AS a
+    FROM range(2000000) t(i);
+
+run
+SELECT count(*)
+FROM yan_skew_r r
+JOIN yan_skew_s s ON r.b = s.b
+JOIN yan_skew_t t ON s.c = t.c AND r.a = t.a;
+
+result I
+2000000

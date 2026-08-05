@@ -35,7 +35,18 @@ extract_min_columns() {
     in_select { select_text = select_text " " $0 }
     
     END { if (in_select) print select_text }
-    ' "$file" | grep -oP 'MIN\(\s*\K[^)]+(?=\s*\))' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+    ' "$file" | awk '
+    {
+        text = $0
+        while (match(text, /MIN\([[:space:]]*[^)]+[[:space:]]*\)/)) {
+            value = substr(text, RSTART + 4, RLENGTH - 5)
+            sub(/^[[:space:]]*/, "", value)
+            sub(/[[:space:]]*$/, "", value)
+            print value
+            text = substr(text, RSTART + RLENGTH)
+        }
+    }
+    '
 }
 
 # Function to transform a single query file
@@ -72,15 +83,28 @@ transform_query_enhanced() {
         group_by_cols="$group_by_cols$col"
     done
     
-    # Add COUNT(*)
-    new_select="$new_select,\n       COUNT(*) AS record_count"
+    # Keep the aggregate spelling used by the Yan+ JOB workload.
+    new_select="$new_select,\n       SUM(1) AS record_count"
     
     # Create the transformed query
     {
         echo -e "$new_select"
         
-        # Copy FROM clause onwards, but add GROUP BY before the end
-        sed -n '/^FROM/,$ p' "$input_file" | sed '$d' # Remove last line
+        # Copy every predicate. Removing the last physical line used to drop a
+        # join condition from files without a trailing blank line (1b and 8a).
+        awk '
+        /^FROM/ { copy = 1 }
+        copy { lines[++count] = $0 }
+        END {
+            while (count > 0 && lines[count] ~ /^[[:space:]]*$/) {
+                count--
+            }
+            sub(/[[:space:]]*;[[:space:]]*$/, "", lines[count])
+            for (line = 1; line <= count; line++) {
+                print lines[line]
+            }
+        }
+        ' "$input_file"
         echo "GROUP BY $group_by_cols"
         
         # Add semicolon if original had one
@@ -97,11 +121,11 @@ transform_query_enhanced() {
 total_files=0
 transformed_files=0
 
-find "$INPUT_DIR" -name "*.sql" -type f | sort | while read -r sql_file; do
+while read -r sql_file; do
     total_files=$((total_files + 1))
     
     # Get relative path from input directory
-    relative_path=$(realpath --relative-to="$INPUT_DIR" "$sql_file")
+    relative_path=${sql_file#"${INPUT_DIR%/}"/}
     
     # Create corresponding output file path
     output_file="$OUTPUT_DIR/$relative_path"
@@ -117,7 +141,7 @@ find "$INPUT_DIR" -name "*.sql" -type f | sort | while read -r sql_file; do
     if ! diff -q "$sql_file" "$output_file" > /dev/null 2>&1; then
         transformed_files=$((transformed_files + 1))
     fi
-done
+done < <(find "$INPUT_DIR" -name "*.sql" -type f | sort)
 
 echo ""
 echo "============================================="
@@ -129,6 +153,6 @@ echo "  Files transformed: $transformed_files"
 echo "============================================="
 echo ""
 echo "Transformed files:"
-find "$OUTPUT_DIR" -name "*.sql" -type f | sort | while read -r file; do
-    echo "  $(realpath --relative-to="$OUTPUT_DIR" "$file")"
-done
+while read -r file; do
+    echo "  ${file#"${OUTPUT_DIR%/}"/}"
+done < <(find "$OUTPUT_DIR" -name "*.sql" -type f | sort)

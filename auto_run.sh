@@ -5,17 +5,20 @@ export LC_ALL=C
 
 usage() {
     cat >&2 <<EOF
-Usage: $0 <database> <query_dir> <origin|yanplus|rewriter> [threads] [cpu_list] [repetitions]
+Usage: $0 <database> <query_dir> <origin|yanplus|rewriter|yannakakis> [threads] [cpu_list] [repetitions]
 
 Examples:
   $0 lsqb lsqb origin
   $0 lsqb lsqb yanplus 64 0-31,36-67 3
   $0 dsb dsb_agg_rewrite rewriter 64 0-31,36-67 3
+  $0 lsqb lsqb_yannakakis_rewrite yannakakis 64 0-31,36-67 3
 
 A bare database name such as "lsqb" resolves to <repository>/lsqb_db.
 The two default executables are produced by ./build_duckdb.sh.
-The rewriter uses the origin executable and runs setup views outside the timed
-region before warming up and timing the final rewritten query.
+The rewriter and Yannakakis modes use the origin executable and run setup views
+outside the timed region before warming up and timing the final rewritten query.
+Committed Yannakakis suites have complete coverage; a blank artifact is still
+reported and skipped defensively when testing a custom directory.
 For a direct origin run, YANPLUS_ORIGIN_SKIP_QUERIES accepts comma- or
 space-separated query basenames, for example: q4,q5,q7.
 EOF
@@ -53,8 +56,16 @@ rewriter | rewrite | duckdb_rewriter)
     EXPECTED_YANPLUS_SETTING_COUNT=0
     EXPECTED_BINARY_KIND=origin
     ;;
+yannakakis | yannakakis_rewriter | duckdb_yannakakis)
+    VARIANT=yannakakis
+    DUCKDB_BIN=${DUCKDB_ORIGIN_BIN:-"${SCRIPT_PATH}/build/duckdb_origin/duckdb"}
+    DUCKDB_BIN=${DUCKDB_REWRITER_BIN:-"${DUCKDB_BIN}"}
+    DUCKDB_BIN=${DUCKDB_YANNAKAKIS_BIN:-"${DUCKDB_BIN}"}
+    EXPECTED_YANPLUS_SETTING_COUNT=0
+    EXPECTED_BINARY_KIND=origin
+    ;;
 *)
-    echo "Error: variant must be 'origin', 'yanplus', or 'rewriter', got '${VARIANT_ARGUMENT}'." >&2
+    echo "Error: variant must be 'origin', 'yanplus', 'rewriter', or 'yannakakis', got '${VARIANT_ARGUMENT}'." >&2
     usage
     exit 1
     ;;
@@ -163,6 +174,34 @@ if ((${#ALL_QUERY_FILES[@]} == 0)); then
     exit 1
 fi
 
+# Committed suites enforce complete nonblank coverage in batch_run.sh. Keep the
+# unavailable path for direct auto_run.sh calls against custom research inputs.
+UNAVAILABLE_QUERY_NAMES=()
+AVAILABLE_QUERY_FILES=()
+for query_file in "${ALL_QUERY_FILES[@]}"; do
+    query_name=$(basename -- "${query_file}" .sql)
+    if [[ "${VARIANT}" == yannakakis ]] &&
+       ! grep -Eq '[^[:space:]]' "${query_file}"; then
+        UNAVAILABLE_QUERY_NAMES+=("${query_name}")
+        rm -f -- "${INPUT_DIR_PATH}/log_${query_name}_${VARIANT}.txt" \
+            "${INPUT_DIR_PATH}/time_${query_name}_${VARIANT}.txt"
+    else
+        AVAILABLE_QUERY_FILES+=("${query_file}")
+    fi
+done
+if ((${#AVAILABLE_QUERY_FILES[@]} > 0)); then
+    ALL_QUERY_FILES=("${AVAILABLE_QUERY_FILES[@]}")
+else
+    echo "Variant: ${VARIANT}"
+    echo "DuckDB: ${DUCKDB_BIN} (${DUCKDB_VERSION})"
+    echo "Database: ${DATABASE_PATH}"
+    printf 'Queries: %s (0 runnable, 0 skipped, %d unavailable)\n' \
+        "${INPUT_DIR_PATH}" "${#UNAVAILABLE_QUERY_NAMES[@]}"
+    echo "Unavailable blank Yannakakis rewrites: ${UNAVAILABLE_QUERY_NAMES[*]}"
+    echo "No runnable queries; nothing to run."
+    exit 0
+fi
+
 ORIGIN_SKIP_QUERY_SPEC=
 if [[ "${VARIANT}" == origin ]]; then
     ORIGIN_SKIP_QUERY_SPEC=${YANPLUS_ORIGIN_SKIP_QUERIES:-}
@@ -240,8 +279,9 @@ done
 
 if ((${#QUERY_FILES[@]} == 0)); then
     echo "Variant: ${VARIANT}"
-    echo "Queries: ${INPUT_DIR_PATH} (0 runnable, ${#SKIPPED_QUERY_NAMES[@]} skipped)"
-    echo "All queries were skipped; nothing to run."
+    printf 'Queries: %s (0 runnable, %d skipped, %d unavailable)\n' \
+        "${INPUT_DIR_PATH}" "${#SKIPPED_QUERY_NAMES[@]}" "${#UNAVAILABLE_QUERY_NAMES[@]}"
+    echo "No runnable queries; nothing to run."
     exit 0
 fi
 
@@ -472,9 +512,14 @@ trap 'exit 143' TERM
 echo "Variant: ${VARIANT}"
 echo "DuckDB: ${DUCKDB_BIN} (${DUCKDB_VERSION})"
 echo "Database: ${DATABASE_PATH}"
-echo "Queries: ${INPUT_DIR_PATH} (${#QUERY_FILES[@]} runnable, ${#SKIPPED_QUERY_NAMES[@]} skipped)"
+printf 'Queries: %s (%d runnable, %d skipped, %d unavailable)\n' \
+    "${INPUT_DIR_PATH}" "${#QUERY_FILES[@]}" "${#SKIPPED_QUERY_NAMES[@]}" \
+    "${#UNAVAILABLE_QUERY_NAMES[@]}"
 if ((${#SKIPPED_QUERY_NAMES[@]} > 0)); then
     echo "Skipped origin queries: ${SKIPPED_QUERY_NAMES[*]}"
+fi
+if ((${#UNAVAILABLE_QUERY_NAMES[@]} > 0)); then
+    echo "Unavailable blank Yannakakis rewrites: ${UNAVAILABLE_QUERY_NAMES[*]}"
 fi
 echo "Experiment threads: ${NUM_THREADS}"
 echo "Experiment CPU list: ${CPU_LIST} (${AVAILABLE_CPU_COUNT} available CPUs)"
@@ -535,11 +580,14 @@ for QUERY in "${QUERY_FILES[@]}"; do
         echo "# cpu_list=${CPU_LIST}"
         echo "# repetitions=${REPETITIONS}"
         if [[ "${QUERY}" == "${SCRIPT_PATH}/lsqb/"* ||
-              "${QUERY}" == "${SCRIPT_PATH}/lsqb_rewrite/"* ]]; then
+              "${QUERY}" == "${SCRIPT_PATH}/lsqb_rewrite/"* ||
+              "${QUERY}" == "${SCRIPT_PATH}/lsqb_yannakakis_rewrite/"* ]]; then
             echo "# lsqb_parameters=country:${LSQB_COUNTRY},tagClass:${LSQB_TAG_CLASS},startDate:${LSQB_START_DATE},endDate:${LSQB_END_DATE}"
         fi
         if [[ "${VARIANT}" == rewriter ]]; then
             echo "# rewriter_setup=untimed temporary views"
+        elif [[ "${VARIANT}" == yannakakis ]]; then
+            echo "# yannakakis_setup=untimed temporary views"
         fi
     } >"${LOG_FILE}"
 
@@ -559,7 +607,8 @@ for QUERY in "${QUERY_FILES[@]}"; do
         QUERY_FAILURE_STATUS=1
         echo "Error: unresolved LSQB parameter in ${QUERY}." | tee -a "${LOG_FILE}" >&2
     fi
-    if [[ -z "${QUERY_FAILURE_STAGE}" && "${VARIANT}" == rewriter ]]; then
+    if [[ -z "${QUERY_FAILURE_STAGE}" &&
+          ("${VARIANT}" == rewriter || "${VARIANT}" == yannakakis) ]]; then
         if prepare_rewriter_query "${CURRENT_RENDERED}" "${CURRENT_SETUP}" "${CURRENT_TEMP}"; then
             :
         else

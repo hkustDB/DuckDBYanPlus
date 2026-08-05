@@ -1,0 +1,28 @@
+# name: benchmark/yanplus/semijoin_filter_acyclic_chain_hash.benchmark
+# description: Selective four-relation acyclic chain using an exact Hash semi-join filter
+# group: [yanplus]
+
+name Yan+ selective acyclic chain semi-join (Hash)
+group yanplus
+subgroup semijoin_filter
+
+load
+SET yanplus_enable = true;
+SET yanplus_cyclic_bags = true;
+SET yanplus_semijoin_filter = 'hash';
+CREATE TABLE yan_chain_seed AS
+    SELECT i::BIGINT AS k1 FROM range(100000) t(i);
+CREATE TABLE yan_chain_l1 AS
+    SELECT (i % 100000)::BIGINT AS k1, i::BIGINT AS k2 FROM range(1000000) t(i);
+CREATE TABLE yan_chain_l2 AS
+    SELECT (i % 1000000)::BIGINT AS k2, i::BIGINT AS k3 FROM range(2000000) t(i);
+CREATE TABLE yan_chain_fact AS
+    SELECT (i % 2000000)::BIGINT AS k3, i::BIGINT AS payload FROM range(4000000) t(i);
+
+run
+SELECT f.payload
+FROM yan_chain_seed d
+JOIN yan_chain_l1 l1 ON d.k1 = l1.k1
+JOIN yan_chain_l2 l2 ON l1.k2 = l2.k2
+JOIN yan_chain_fact f ON l2.k3 = f.k3
+WHERE d.k1 < 5000;
