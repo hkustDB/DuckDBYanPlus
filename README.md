@@ -153,27 +153,22 @@ when a strict source-clean upstream binary is required.
 
 ## Benchmark
 
-The reproducible Bloom-versus-Hash experiment is documented in
-[`benchmark/yanplus/README.md`](benchmark/yanplus/README.md). It covers six
-paired workloads: acyclic chain and star plans, three- and four-relation cyclic
-plans, a large mixed-type composite separator, and duplicate-heavy skew. Only
-the semi-join-filter backend changes within each pair. One invocation measures
-both backends under two fixed-affinity profiles: one thread on CPU `0`, and 64
-threads on CPUs `0-31,36-67`. The default combined CSV has 24 result rows and
-records workload metadata, configuration, thread count, and CPU mask.
+The reproducible Bloom-versus-exact-Hash experiment is documented in
+[`benchmark/yanplus/README.md`](benchmark/yanplus/README.md). Its dedicated
+runner measures Graph Q1 plus `SELECT *` variants of LSQB Q1 and Q5, including
+the unary-predicate cases `q1_predicate` and `q5_predicate`. Each query uses one
+fixed thread/affinity configuration and is executed under exactly two Yan+
+settings: `yanplus_semijoin_filter = 'BLOOM'` and
+`yanplus_semijoin_filter = 'HASH'`. It does not use the older synthetic workload
+or single-thread/multi-thread matrix.
 
-On the 72-logical-CPU experiment host, the multi-thread profile and the query
-suite launchers use 64 DuckDB threads with Linux
-`taskset --cpu-list 0-31,36-67`. Thus logical CPUs 32–35 and 68–71 are excluded.
-The query-suite launchers disable internal pinning and rebuild the worker pool
-before timing. The v1.5 scheduler also maps automatic startup pinning onto the
-inherited allowed-CPU mask instead of global sequential CPU IDs, which keeps
-the benchmark runner inside the same mask.
+On the 72-logical-CPU experiment host, the runner defaults to 64 DuckDB threads
+with Linux `taskset --cpu-list 0-31,36-67`. Thus logical CPUs 32–35 and 68–71
+are excluded. The runner disables internal pinning and rebuilds the worker pool
+before timing, leaving `taskset` as the only affinity policy.
 
 ```sh
-python3 benchmark/yanplus/compare_semijoin_filters.py \
-  --runner build/release/benchmark/benchmark_runner \
-  --output benchmark/yanplus/results.csv
+python3 benchmark/yanplus/run_query_filter_comparison.py
 ```
 
 To run the committed Graph, LSQB, DSB, TPC-H, and JOB suites with both compiled
