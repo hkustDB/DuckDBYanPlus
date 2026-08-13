@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare Yan+ Bloom and exact Hash filters on selected real queries."""
+"""Compare Yan+ Bloom and exact Hash filters on real-query selectivity sweeps."""
 
 import argparse
 import csv
@@ -31,6 +31,8 @@ COUNT_PROJECTION_PATTERN = re.compile(
 CSV_FIELDS = (
     "query",
     "query_file",
+    "predicate",
+    "expected_selectivity_pct",
     "database",
     "threads",
     "cpu_list",
@@ -44,6 +46,7 @@ CSV_FIELDS = (
     "hash_min_seconds",
     "hash_max_seconds",
     "hash_speedup_vs_bloom",
+    "bloom_speedup_vs_hash",
     "faster_backend",
     "bloom_samples_seconds",
     "hash_samples_seconds",
@@ -56,6 +59,8 @@ class Workload(NamedTuple):
     database_name: str
     original_query_file: Optional[pathlib.Path] = None
     unary_predicate: Optional[str] = None
+    expected_selectivity_pct: Optional[float] = None
+    replace_count_projection: bool = True
 
 
 WORKLOADS = {
@@ -63,6 +68,62 @@ WORKLOADS = {
         "graph_q1",
         REPOSITORY_ROOT / "graph/q1.sql",
         "graph_db",
+        unary_predicate="g1.src < 1000",
+        expected_selectivity_pct=100.0,
+    ),
+    "graph_q1_predicate_50pct": Workload(
+        "graph_q1_predicate_50pct",
+        HERE / "queries/graph_q1_predicate_50pct.sql",
+        "graph_db",
+        REPOSITORY_ROOT / "graph/q1.sql",
+        "g1.src % 2 = 0",
+        50.0,
+        False,
+    ),
+    "graph_q1_predicate_20pct": Workload(
+        "graph_q1_predicate_20pct",
+        HERE / "queries/graph_q1_predicate_20pct.sql",
+        "graph_db",
+        REPOSITORY_ROOT / "graph/q1.sql",
+        "g1.src % 5 = 0",
+        20.0,
+        False,
+    ),
+    "graph_q1_predicate_10pct": Workload(
+        "graph_q1_predicate_10pct",
+        HERE / "queries/graph_q1_predicate_10pct.sql",
+        "graph_db",
+        REPOSITORY_ROOT / "graph/q1.sql",
+        "g1.src % 10 = 0",
+        10.0,
+        False,
+    ),
+    "graph_q1_predicate_05pct": Workload(
+        "graph_q1_predicate_05pct",
+        HERE / "queries/graph_q1_predicate_05pct.sql",
+        "graph_db",
+        REPOSITORY_ROOT / "graph/q1.sql",
+        "g1.src % 20 = 0",
+        5.0,
+        False,
+    ),
+    "graph_q1_predicate_02pct": Workload(
+        "graph_q1_predicate_02pct",
+        HERE / "queries/graph_q1_predicate_02pct.sql",
+        "graph_db",
+        REPOSITORY_ROOT / "graph/q1.sql",
+        "g1.src % 50 = 0",
+        2.0,
+        False,
+    ),
+    "graph_q1_predicate_01pct": Workload(
+        "graph_q1_predicate_01pct",
+        HERE / "queries/graph_q1_predicate_01pct.sql",
+        "graph_db",
+        REPOSITORY_ROOT / "graph/q1.sql",
+        "g1.src % 100 = 0",
+        1.0,
+        False,
     ),
     "lsqb_q1": Workload(
         "lsqb_q1",
@@ -89,6 +150,67 @@ WORKLOADS = {
         "lsqb_db",
         REPOSITORY_ROOT / "lsqb/q5.sql",
         "Message_hasTag_Tag_T.MessageId % 10 = 0",
+        10.0,
+    ),
+    "q5_predicate_50pct": Workload(
+        "q5_predicate_50pct",
+        HERE / "queries/q5_predicate_50pct.sql",
+        "lsqb_db",
+        REPOSITORY_ROOT / "lsqb/q5.sql",
+        "Message_hasTag_Tag_T.MessageId % 2 = 0",
+        50.0,
+    ),
+    "q5_predicate_20pct": Workload(
+        "q5_predicate_20pct",
+        HERE / "queries/q5_predicate_20pct.sql",
+        "lsqb_db",
+        REPOSITORY_ROOT / "lsqb/q5.sql",
+        "Message_hasTag_Tag_T.MessageId % 5 = 0",
+        20.0,
+    ),
+    "q5_predicate_05pct": Workload(
+        "q5_predicate_05pct",
+        HERE / "queries/q5_predicate_05pct.sql",
+        "lsqb_db",
+        REPOSITORY_ROOT / "lsqb/q5.sql",
+        "Message_hasTag_Tag_T.MessageId % 20 = 0",
+        5.0,
+    ),
+    "q5_predicate_02pct": Workload(
+        "q5_predicate_02pct",
+        HERE / "queries/q5_predicate_02pct.sql",
+        "lsqb_db",
+        REPOSITORY_ROOT / "lsqb/q5.sql",
+        "Message_hasTag_Tag_T.MessageId % 50 = 0",
+        2.0,
+    ),
+    "q5_predicate_01pct": Workload(
+        "q5_predicate_01pct",
+        HERE / "queries/q5_predicate_01pct.sql",
+        "lsqb_db",
+        REPOSITORY_ROOT / "lsqb/q5.sql",
+        "Message_hasTag_Tag_T.MessageId % 100 = 0",
+        1.0,
+    ),
+}
+
+WORKLOAD_GROUPS = {
+    "graph_q1_sweep": (
+        "graph_q1",
+        "graph_q1_predicate_50pct",
+        "graph_q1_predicate_20pct",
+        "graph_q1_predicate_10pct",
+        "graph_q1_predicate_05pct",
+        "graph_q1_predicate_02pct",
+        "graph_q1_predicate_01pct",
+    ),
+    "q5_sweep": (
+        "q5_predicate_50pct",
+        "q5_predicate_20pct",
+        "q5_predicate",
+        "q5_predicate_05pct",
+        "q5_predicate_02pct",
+        "q5_predicate_01pct",
     ),
 }
 
@@ -151,12 +273,18 @@ def selected_workloads(parser, selections):
     for selection in selections:
         for item in selection.split(","):
             name = item.strip().lower()
-            if name not in WORKLOADS:
+            if name in WORKLOAD_GROUPS:
+                candidates = WORKLOAD_GROUPS[name]
+            elif name in WORKLOADS:
+                candidates = (name,)
+            else:
                 parser.error(
-                    f"unknown query '{name}'; choose from {', '.join(WORKLOADS)}"
+                    f"unknown query/group '{name}'; choose from "
+                    f"{', '.join((*WORKLOADS, *WORKLOAD_GROUPS))}"
                 )
-            if name not in names:
-                names.append(name)
+            for candidate in candidates:
+                if candidate not in names:
+                    names.append(candidate)
     return [WORKLOADS[name] for name in names]
 
 
@@ -167,25 +295,32 @@ def read_query(workload):
     if not query.strip():
         raise RuntimeError(f"query file is empty: {workload.query_file}")
 
-    # The LSQB copies are intentionally projection-only variants. Refuse to
-    # benchmark them if any other part has drifted from the source query.
+    # Predicate variants are intentionally minimal edits of their source query.
+    # Refuse to benchmark them if any other part has drifted.
     if workload.original_query_file is not None:
         original = workload.original_query_file.read_text(encoding="utf-8")
-        expected, replacements = COUNT_PROJECTION_PATTERN.subn(
-            lambda match: match.group("leading") + "SELECT *", original, count=1
-        )
-        if replacements != 1:
-            raise RuntimeError(
-                f"expected one leading SELECT count(*) in {workload.original_query_file}"
+        if workload.replace_count_projection:
+            expected, replacements = COUNT_PROJECTION_PATTERN.subn(
+                lambda match: match.group("leading") + "SELECT *", original, count=1
             )
+            if replacements != 1:
+                raise RuntimeError(
+                    f"expected one leading SELECT count(*) in {workload.original_query_file}"
+                )
+        else:
+            expected = original
         if workload.unary_predicate is not None:
             expected = expected.rstrip() + f"\n\tAND {workload.unary_predicate}\n"
         if query.rstrip() != expected.rstrip():
             raise RuntimeError(
-                f"{workload.query_file} must differ from {workload.original_query_file} "
-                "only by replacing the leading SELECT count(*) with SELECT *"
+                f"{workload.query_file} must differ from {workload.original_query_file} only by "
                 + (
-                    f" and adding the unary predicate {workload.unary_predicate}"
+                    "replacing the leading SELECT count(*) with SELECT *"
+                    if workload.replace_count_projection
+                    else "preserving the source query"
+                )
+                + (
+                    f" and adding the predicate {workload.unary_predicate}"
                     if workload.unary_predicate is not None
                     else ""
                 )
@@ -368,6 +503,12 @@ def comparison_row(args, workload, samples):
     return {
         "query": workload.name,
         "query_file": workload.query_file.relative_to(REPOSITORY_ROOT).as_posix(),
+        "predicate": workload.unary_predicate or "",
+        "expected_selectivity_pct": (
+            ""
+            if workload.expected_selectivity_pct is None
+            else f"{workload.expected_selectivity_pct:.1f}"
+        ),
         "database": str((args.database_root / workload.database_name).resolve()),
         "threads": args.threads,
         "cpu_list": "none" if args.no_affinity else args.cpu_list,
@@ -381,6 +522,7 @@ def comparison_row(args, workload, samples):
         "hash_min_seconds": format_seconds(min(exact_hash)),
         "hash_max_seconds": format_seconds(max(exact_hash)),
         "hash_speedup_vs_bloom": f"{bloom_median / hash_median:.4f}",
+        "bloom_speedup_vs_hash": f"{hash_median / bloom_median:.4f}",
         "faster_backend": faster_backend,
         "bloom_samples_seconds": samples_text(bloom),
         "hash_samples_seconds": samples_text(exact_hash),
@@ -402,11 +544,15 @@ def write_results(rows, output):
 
 
 def print_summary(rows):
-    print("query\tbloom_median_s\thash_median_s\thash_speedup_vs_bloom\tfaster_backend")
+    print(
+        "query\texpected_selectivity_pct\tbloom_median_s\thash_median_s\t"
+        "bloom_speedup_vs_hash\tfaster_backend"
+    )
     for row in rows:
         print(
-            f"{row['query']}\t{row['bloom_median_seconds']}\t"
-            f"{row['hash_median_seconds']}\t{row['hash_speedup_vs_bloom']}\t"
+            f"{row['query']}\t{row['expected_selectivity_pct']}\t"
+            f"{row['bloom_median_seconds']}\t{row['hash_median_seconds']}\t"
+            f"{row['bloom_speedup_vs_hash']}\t"
             f"{row['faster_backend']}"
         )
 
@@ -415,7 +561,8 @@ def main():
     parser = argparse.ArgumentParser(
         description=(
             "Compare Yan+ BLOOM and HASH semi-join filters on Graph Q1 and "
-            "SELECT * variants of LSQB Q1/Q5, with and without unary predicates."
+            "SELECT * variants of LSQB Q1/Q5, including Graph Q1 and Q5 "
+            "predicate-selectivity sweeps."
         )
     )
     parser.add_argument(
@@ -497,8 +644,11 @@ def main():
             print(
                 f"{workload.name}\t"
                 f"{workload.query_file.relative_to(REPOSITORY_ROOT).as_posix()}\t"
-                f"{workload.database_name}"
+                f"{workload.database_name}\t"
+                f"{workload.expected_selectivity_pct or ''}"
             )
+        for group, members in WORKLOAD_GROUPS.items():
+            print(f"group:{group}\t{','.join(members)}")
         return
 
     workloads = selected_workloads(parser, args.query_selections)
@@ -513,6 +663,7 @@ def main():
     validate_environment(parser, args, workloads)
     setup_sql = thread_setup_sql(args)
     randomizer = random.Random(args.seed)
+    output_order = [workload.name for workload in workloads]
     randomizer.shuffle(workloads)
 
     rows_by_query = {}
@@ -536,11 +687,7 @@ def main():
                 )
             rows_by_query[workload.name] = comparison_row(args, workload, samples)
 
-    rows = [
-        rows_by_query[workload.name]
-        for workload in WORKLOADS.values()
-        if workload.name in rows_by_query
-    ]
+    rows = [rows_by_query[name] for name in output_order]
     write_results(rows, args.output.resolve())
     print_summary(rows)
     print(f"Comparison CSV: {args.output.resolve()}", file=sys.stderr)
