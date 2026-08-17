@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare Yan+ Bloom and exact Hash filters on real-query selectivity sweeps."""
+"""Compare Yan+ Bloom and exact Hash filters on the LSQB Q5 sweep."""
 
 import argparse
 import csv
@@ -64,93 +64,12 @@ class Workload(NamedTuple):
 
 
 WORKLOADS = {
-    "graph_q1": Workload(
-        "graph_q1",
-        REPOSITORY_ROOT / "graph/q1.sql",
-        "graph_db",
-        unary_predicate="g1.src < 1000",
-        expected_selectivity_pct=100.0,
-    ),
-    "graph_q1_predicate_50pct": Workload(
-        "graph_q1_predicate_50pct",
-        HERE / "queries/graph_q1_predicate_50pct.sql",
-        "graph_db",
-        REPOSITORY_ROOT / "graph/q1.sql",
-        "g1.src % 2 = 0",
-        50.0,
-        False,
-    ),
-    "graph_q1_predicate_20pct": Workload(
-        "graph_q1_predicate_20pct",
-        HERE / "queries/graph_q1_predicate_20pct.sql",
-        "graph_db",
-        REPOSITORY_ROOT / "graph/q1.sql",
-        "g1.src % 5 = 0",
-        20.0,
-        False,
-    ),
-    "graph_q1_predicate_10pct": Workload(
-        "graph_q1_predicate_10pct",
-        HERE / "queries/graph_q1_predicate_10pct.sql",
-        "graph_db",
-        REPOSITORY_ROOT / "graph/q1.sql",
-        "g1.src % 10 = 0",
-        10.0,
-        False,
-    ),
-    "graph_q1_predicate_05pct": Workload(
-        "graph_q1_predicate_05pct",
-        HERE / "queries/graph_q1_predicate_05pct.sql",
-        "graph_db",
-        REPOSITORY_ROOT / "graph/q1.sql",
-        "g1.src % 20 = 0",
-        5.0,
-        False,
-    ),
-    "graph_q1_predicate_02pct": Workload(
-        "graph_q1_predicate_02pct",
-        HERE / "queries/graph_q1_predicate_02pct.sql",
-        "graph_db",
-        REPOSITORY_ROOT / "graph/q1.sql",
-        "g1.src % 50 = 0",
-        2.0,
-        False,
-    ),
-    "graph_q1_predicate_01pct": Workload(
-        "graph_q1_predicate_01pct",
-        HERE / "queries/graph_q1_predicate_01pct.sql",
-        "graph_db",
-        REPOSITORY_ROOT / "graph/q1.sql",
-        "g1.src % 100 = 0",
-        1.0,
-        False,
-    ),
-    "lsqb_q1": Workload(
-        "lsqb_q1",
-        HERE / "queries/lsqb_q1_select_all.sql",
-        "lsqb_db",
-        REPOSITORY_ROOT / "lsqb/q1.sql",
-    ),
-    "q1_predicate": Workload(
-        "q1_predicate",
-        HERE / "queries/q1_predicate.sql",
-        "lsqb_db",
-        REPOSITORY_ROOT / "lsqb/q1.sql",
-        "Person.PersonId % 10 = 0",
-    ),
     "lsqb_q5": Workload(
         "lsqb_q5",
         HERE / "queries/lsqb_q5_select_all.sql",
         "lsqb_db",
         REPOSITORY_ROOT / "lsqb/q5.sql",
-    ),
-    "q5_predicate": Workload(
-        "q5_predicate",
-        HERE / "queries/q5_predicate.sql",
-        "lsqb_db",
-        REPOSITORY_ROOT / "lsqb/q5.sql",
-        "Message_hasTag_Tag_T.MessageId % 10 = 0",
-        10.0,
+        expected_selectivity_pct=100.0,
     ),
     "q5_predicate_50pct": Workload(
         "q5_predicate_50pct",
@@ -167,6 +86,14 @@ WORKLOADS = {
         REPOSITORY_ROOT / "lsqb/q5.sql",
         "Message_hasTag_Tag_T.MessageId % 5 = 0",
         20.0,
+    ),
+    "q5_predicate": Workload(
+        "q5_predicate",
+        HERE / "queries/q5_predicate.sql",
+        "lsqb_db",
+        REPOSITORY_ROOT / "lsqb/q5.sql",
+        "Message_hasTag_Tag_T.MessageId % 10 = 0",
+        10.0,
     ),
     "q5_predicate_05pct": Workload(
         "q5_predicate_05pct",
@@ -195,16 +122,8 @@ WORKLOADS = {
 }
 
 WORKLOAD_GROUPS = {
-    "graph_q1_sweep": (
-        "graph_q1",
-        "graph_q1_predicate_50pct",
-        "graph_q1_predicate_20pct",
-        "graph_q1_predicate_10pct",
-        "graph_q1_predicate_05pct",
-        "graph_q1_predicate_02pct",
-        "graph_q1_predicate_01pct",
-    ),
     "q5_sweep": (
+        "lsqb_q5",
         "q5_predicate_50pct",
         "q5_predicate_20pct",
         "q5_predicate",
@@ -559,11 +478,7 @@ def print_summary(rows):
 
 def main():
     parser = argparse.ArgumentParser(
-        description=(
-            "Compare Yan+ BLOOM and HASH semi-join filters on Graph Q1 and "
-            "SELECT * variants of LSQB Q1/Q5, including Graph Q1 and Q5 "
-            "predicate-selectivity sweeps."
-        )
+        description="Compare Yan+ BLOOM and HASH semi-join filters on the LSQB Q5 sweep."
     )
     parser.add_argument(
         "--duckdb",
@@ -575,7 +490,7 @@ def main():
         "--database-root",
         type=pathlib.Path,
         default=pathlib.Path(os.environ.get("YANPLUS_DATABASE_ROOT", REPOSITORY_ROOT)),
-        help="directory containing graph_db and lsqb_db",
+        help="directory containing lsqb_db",
     )
     parser.add_argument(
         "--threads",

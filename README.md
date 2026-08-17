@@ -155,12 +155,18 @@ when a strict source-clean upstream binary is required.
 
 The reproducible Bloom-versus-exact-Hash experiment is documented in
 [`benchmark/yanplus/README.md`](benchmark/yanplus/README.md). Its dedicated
-runner measures Graph Q1 plus `SELECT *` variants of LSQB Q1 and Q5, including
-the unary-predicate cases `q1_predicate` and `q5_predicate`. Each query uses one
+real-query runner now measures only the seven-point LSQB Q5 selectivity sweep;
+Graph Q1 and the unrelated Q1 cases have been removed. Each query uses one
 fixed thread/affinity configuration and is executed under exactly two Yan+
 settings: `yanplus_semijoin_filter = 'BLOOM'` and
-`yanplus_semijoin_filter = 'HASH'`. It does not use the older synthetic workload
-or single-thread/multi-thread matrix.
+`yanplus_semijoin_filter = 'HASH'`.
+
+A second runner isolates one unique-`uint64_t` Bloom/Hash filter on one pinned
+CPU and selects allocation steps immediately below and above that CPU's L1d,
+L2, and L3 sizes. It records final/peak memory, initialization, build, and
+fixed-count random-probe time. Linux sysfs supplies per-instance cache sizes;
+the aggregate `lscpu` values `1.7 MiB`, `45 MiB`, and `78 MiB` must not be used
+as a single worker's cache boundaries.
 
 On the 72-logical-CPU experiment host, the runner defaults to 64 DuckDB threads
 with Linux `taskset --cpu-list 0-31,36-67`. Thus logical CPUs 32–35 and 68–71
@@ -168,7 +174,14 @@ are excluded. The runner disables internal pinning and rebuilds the worker pool
 before timing, leaving `taskset` as the only affinity policy.
 
 ```sh
-python3 benchmark/yanplus/run_query_filter_comparison.py
+python3 benchmark/yanplus/run_query_filter_comparison.py \
+  --query q5_sweep \
+  --repetitions 9 \
+  --output semijoin_comparison_results.csv
+
+python3 benchmark/yanplus/run_filter_cache_microbenchmark.py \
+  --cpu 0 \
+  --output semijoin_cache_results.csv
 ```
 
 To run the committed Graph, LSQB, DSB, TPC-H, and JOB suites with both compiled
@@ -399,6 +412,125 @@ not reported as valid results.
 `taskset` is Linux-only and the values are logical CPU IDs. Check the target
 host layout with `lscpu -e=CPU,CORE,SOCKET,NODE` before using this machine-specific
 mask.
+
+### Plot the DuckDB v1.5 results
+
+The benchmark plotting script reads the modified-kernel results from
+`DuckdbYanPlus_v1.5` and the SQL-rewrite results from `Rewrite_duckdb_1.5`.
+Its default input root is:
+
+```text
+~/Desktop/TODS revision
+```
+
+From the repository root, generate the Graph, LSQB, TPC-H, JOB, and combined
+DSB figures with:
+
+```sh
+python3 scripts/plot_figure.py
+```
+
+Generate the Q5 Bloom-versus-Hash runtime figure from
+`~/Desktop/TODS revision/semijoin_comparison_results.csv` with:
+
+```sh
+python3 scripts/plot_semijoin_comparison.py
+```
+
+After running the cache experiment on the server, generate its memory,
+build-time, and probe-time figure directly from the runner output with:
+
+```sh
+python3 scripts/plot_semijoin_cache.py \
+  --input semijoin_cache_results.csv
+```
+
+All three plotting commands write PNG and PDF files by default to:
+
+```text
+figures/duckdb_v1_5/
+```
+
+The output basenames are:
+
+| Figure | PNG and PDF basename |
+| --- | --- |
+| Graph and LSQB | `graph_lsqb_benchmark` |
+| TPC-H and DSB aggregate/SPJ | `tpch_dsb_benchmark` |
+| JOB query families 1–7 | `job_benchmark_1_7` |
+| JOB query families 8–14 | `job_benchmark_8_14` |
+| JOB query families 15–20 | `job_benchmark_15_20` |
+| JOB query families 21–27 | `job_benchmark_21_27` |
+| JOB query families 28–33 | `job_benchmark_28_33` |
+| Q5 Bloom and Hash runtimes | `semijoin_comparison` |
+| Bloom/Hash memory and cache boundaries | `semijoin_cache_boundary` |
+
+For example, the merged Graph/LSQB outputs are
+`figures/duckdb_v1_5/graph_lsqb_benchmark.png` and
+`figures/duckdb_v1_5/graph_lsqb_benchmark.pdf`.
+
+Graph/LSQB and TPC-H/DSB each use one continuous horizontal query axis. Their
+query labels are horizontal, and each benchmark label is placed immediately
+below its query range, with no divider line or overall figure title. JOB is
+divided into five less crowded figures; its query labels are horizontal and
+range captions such as `JOB queries 28-33` are omitted. The centered legend is
+positioned immediately above the plot ceiling without a large blank band. The
+semi-join bars use a muted blue/rose palette with simple opposing diagonal
+hatches. The semi-join chart retains only Q5 rows, sorts them as 100%, 50%,
+20%, 10%, 5%, 2%, and 1%, then renames them `q5_v1` through `q5_v7`. Each
+variant keeps its Bloom and
+Hash median-runtime bars, but the per-bar runtime text, Bloom-speedup
+annotations, and min–max error lines are omitted. Bloom
+speedup is still calculated as
+`hash_median_seconds / bloom_median_seconds` and printed by the plotting
+command; values above 1x mean Bloom is faster. The semi-join and cache-boundary
+figures also omit an overall bottom title. Each query group uses touching
+vertical bars, with a gap only between query groups. The benchmark-runtime
+plots treat runtimes at or above the 7200-second time limit as timeouts and
+extend those bars to the y-axis ceiling, matching the reference convention;
+blank or zero measurements remain `N/A`. The benchmark-runtime series are:
+
+| Figure label | Measurement |
+| --- | --- |
+| `DuckDB1.5` | Native DuckDB v1.5 runtime from the `origin` column. |
+| `DuckDB1.5-Yan (rewrite)` | Fastest runtime in `timing_summary_yannakakis_rewrite_[graph\|lsqb\|job\|tpch].csv`. |
+| `DuckDB1.5-Yan⁺ (rewrite)` | Yannakakis+ SQL rewrite runtime. |
+| `DuckDB1.5-Yan⁺` | Modified-kernel runtime from the Yan+ results. |
+
+The Graph native and Yan+ rewrite measurements come from
+`summary_graph_statistics.csv`. That file uses related suffix variants such as
+`q1a`, `q1b`, and `q1c`; the plot groups them as Q1 and uses the fastest
+positive measurement so they align with Q1–Q6 in the new timing summaries.
+For JOB, `summary_job_statistics.csv` reports Yan+ rewrite speedups rather than
+seconds, so the plot reconstructs runtime as
+`DuckDB1.5 runtime / Yannakakis+ speedup`. DSB has no
+`timing_summary_yannakakis_rewrite_dsb.csv`, so its panel contains the other
+three available series.
+
+Use another result or output location as follows:
+
+```sh
+python3 scripts/plot_figure.py \
+  --data-root "/path/to/TODS revision" \
+  --output-dir /path/to/figures
+
+python3 scripts/plot_semijoin_comparison.py \
+  --input "/path/to/semijoin_comparison_results.csv" \
+  --output-dir /path/to/figures
+
+python3 scripts/plot_semijoin_cache.py \
+  --input "/path/to/semijoin_cache_results.csv" \
+  --output-dir /path/to/figures
+```
+
+`plot_figure.py` accepts `--benchmarks graph lsqb tpch job dsb` to select a
+subset, `--formats png pdf svg` to select output formats, and
+`--scale auto|linear|log` to control the vertical runtime axis. The default
+`log` scale matches the reference drawing style; `auto` selects a logarithmic
+axis only when a suite spans at least 50x. For queries with multiple rewrite
+variants, the figure uses the fastest measured variant. Only queries with all
+required source rows are compared. Graph Q7 and DSB SPJ Q99 are currently
+omitted because the corresponding required rewrite measurements are absent.
 
 - Sub-Graph Pattern Benchmark (SGPB) 
 
