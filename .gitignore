@@ -74,6 +74,7 @@ m4/lt~obsolete.m4
 #==============================================================================#
 #m4/
 build/
+/figures/duckdb_v1_5/
 duckdb_benchmark_data/
 /graph_db
 /lsqb_db
