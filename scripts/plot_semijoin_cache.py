@@ -36,8 +36,8 @@ MIB = 1024 * 1024
 BLOOM_MAX_SECTORS = 1 << 26
 HASH_RETAINED_BOXED_BYTES = 64 * 16
 BACKEND_STYLES = {
-    "bloom": {"label": "Bloom", "color": "#1f77b4", "marker": "o"},
-    "hash": {"label": "Hash", "color": "#ff7f0e", "marker": "s"},
+    "bloom": {"label": "Bloom Filter", "color": "#1f77b4", "marker": "o"},
+    "hash": {"label": "Hash Filter", "color": "#ff7f0e", "marker": "s"},
 }
 CACHE_STYLES = {
     "L1d": {"color": "#777777", "linestyle": ":"},

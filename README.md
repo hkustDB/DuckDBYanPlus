@@ -346,6 +346,38 @@ python3 scripts/validate_job_yannakakis.py \
     --duckdb build/duckdb_origin/duckdb --database ./job_db
 ```
 
+### Robustness across alternative rewritten plans
+
+The dedicated [`robustness`](robustness/README.md) experiment samples LSQB q1
+and q9 plus JOB 2d, 15d, 17a, and 22d. It contains 46 commit-pinned
+`rewriteN.sql` plans, normalized to `rewrite1.sql`, `rewrite2.sql`, and so on,
+and the six matching originals as `query.sql`. Exact upstream paths, commits,
+hashes, and DuckDB adaptations are recorded in
+[`robustness/manifest.tsv`](robustness/manifest.tsv).
+
+After building `build/duckdb_origin/duckdb` and placing populated `lsqb_db` and
+`job_db` files at the repository root, run the complete experiment with its
+reproducible defaults:
+
+```sh
+python3 robustness/run_experiment.py
+```
+
+The defaults are 64 DuckDB threads, Linux CPU list `0-31,36-67`, ten measured
+repetitions, one warm-up per repetition, seed `20260822`, and a two-hour
+per-process timeout. Pass `--cpu-list none` only on a machine where Linux CPU
+pinning is unavailable.
+
+Before timing, every rewrite must return exactly the same result as its
+`query.sql`. Valid plans are then run in globally randomized repetition blocks,
+one fresh DuckDB process per plan. The timestamped result directory contains raw
+timings, validation records, per-plan mean/median/tail statistics, per-query
+summaries, overall arithmetic and geometric speedups, logs, metadata, and a
+human-readable `summary.md`. The all-plans robustness claim is true only when
+all 46 rewrites validate, complete every repetition, and strictly beat their
+original plan by median runtime; the arithmetic-mean criterion is also reported
+separately.
+
 Override the origin-only skip list with one or more `--skip-origin` options:
 
 ```sh
@@ -415,13 +447,18 @@ mask.
 
 ### Plot the DuckDB v1.5 results
 
-The benchmark plotting script reads the modified-kernel results from
-`DuckdbYanPlus_v1.5` and the SQL-rewrite results from `Rewrite_duckdb_1.5`.
-Its default input root is:
+The benchmark plotting script reads every plotted runtime from one workbook.
+Its default source is:
 
 ```text
-~/Desktop/TODS revision
+~/Library/CloudStorage/OneDrive-HKUSTConnect/DuckYan_1_5_results.xlsx
 ```
+
+The workbook contains `graph`, `lsqb`, `tpch`, `dsbagg`, `dsbspj`, and `job`
+sheets. In each sheet, the first column lists query names and the remaining
+columns are `Origin`, `Yan`, `YanPlus_rewrite`, and `YanPlus`, all in seconds.
+The legacy CSV files are used only when refreshing the workbook; the figure
+generator no longer reads them.
 
 From the repository root, generate the Graph, LSQB, TPC-H, JOB, and combined
 DSB figures with:
@@ -462,8 +499,8 @@ The output basenames are:
 | JOB query families 15–20 | `job_benchmark_15_20` |
 | JOB query families 21–27 | `job_benchmark_21_27` |
 | JOB query families 28–33 | `job_benchmark_28_33` |
-| Q5 Bloom and Hash runtimes | `semijoin_comparison` |
-| Bloom/Hash memory and cache boundaries | `semijoin_cache_boundary` |
+| Q5 Bloom Filter and Hash Filter runtimes | `semijoin_comparison` |
+| Bloom Filter/Hash Filter memory and cache boundaries | `semijoin_cache_boundary` |
 
 For example, the merged Graph/LSQB outputs are
 `figures/duckdb_v1_5/graph_lsqb_benchmark.png` and
@@ -477,9 +514,9 @@ range captions such as `JOB queries 28-33` are omitted. The centered legend is
 positioned immediately above the plot ceiling without a large blank band. The
 semi-join bars use a muted blue/rose palette with simple opposing diagonal
 hatches. The semi-join chart retains only Q5 rows, sorts them as 100%, 50%,
-20%, 10%, 5%, 2%, and 1%, then renames them `q5_v1` through `q5_v7`. Each
-variant keeps its Bloom and
-Hash median-runtime bars, but the per-bar runtime text, Bloom-speedup
+20%, 10%, 5%, 2%, and 1%, then renames them `Q5a` through `Q5g`. Each
+variant keeps its Bloom Filter and
+Hash Filter median-runtime bars, but the per-bar runtime text, Bloom-speedup
 annotations, and min–max error lines are omitted. Bloom
 speedup is still calculated as
 `hash_median_seconds / bloom_median_seconds` and printed by the plotting
@@ -488,30 +525,28 @@ figures also omit an overall bottom title. Each query group uses touching
 vertical bars, with a gap only between query groups. The benchmark-runtime
 plots treat runtimes at or above the 7200-second time limit as timeouts and
 extend those bars to the y-axis ceiling, matching the reference convention;
-blank or zero measurements remain `N/A`. The benchmark-runtime series are:
+blank or zero measurements remain `N/A`. Direct Graph Q4/Q5/Q7 and LSQB Q8/Q9
+timeouts are read as numeric 7200-second values from `DuckYan_1_5_results.xlsx`.
+The benchmark-runtime series are:
 
 | Figure label | Measurement |
 | --- | --- |
-| `DuckDB1.5` | Native DuckDB v1.5 runtime from the `origin` column. |
-| `DuckDB1.5-Yan (rewrite)` | Fastest runtime in `timing_summary_yannakakis_rewrite_[graph\|lsqb\|job\|tpch].csv`. |
-| `DuckDB1.5-Yan⁺ (rewrite)` | Yannakakis+ SQL rewrite runtime. |
-| `DuckDB1.5-Yan⁺` | Modified-kernel runtime from the Yan+ results. |
+| `DuckDB1.5` | Workbook column `Origin`: native DuckDB v1.5 runtime. |
+| `DuckDB1.5-Yan (rewrite)` | Workbook column `Yan`: Yannakakis rewrite runtime. |
+| `DuckDB1.5-Yan⁺ (rewrite)` | Workbook column `YanPlus_rewrite`: Yannakakis+ rewrite runtime. |
+| `DuckDB1.5-Yan⁺` | Workbook column `YanPlus`: integrated Yannakakis+ runtime. |
 
-The Graph native and Yan+ rewrite measurements come from
-`summary_graph_statistics.csv`. That file uses related suffix variants such as
-`q1a`, `q1b`, and `q1c`; the plot groups them as Q1 and uses the fastest
-positive measurement so they align with Q1–Q6 in the new timing summaries.
-For JOB, `summary_job_statistics.csv` reports Yan+ rewrite speedups rather than
-seconds, so the plot reconstructs runtime as
-`DuckDB1.5 runtime / Yannakakis+ speedup`. DSB has no
-`timing_summary_yannakakis_rewrite_dsb.csv`, so its panel contains the other
-three available series.
+Missing workbook cells are plotted as `N/A`. DSB has no Yan measurement source,
+so the `Yan` column remains blank on its two sheets and its panel contains the
+other three available series. The workbook stores already-consolidated runtime
+values; no speedup-to-runtime conversion or fastest-variant selection occurs
+inside the plotting command.
 
 Use another result or output location as follows:
 
 ```sh
 python3 scripts/plot_figure.py \
-  --data-root "/path/to/TODS revision" \
+  --workbook "/path/to/DuckYan_1_5_results.xlsx" \
   --output-dir /path/to/figures
 
 python3 scripts/plot_semijoin_comparison.py \
@@ -527,10 +562,8 @@ python3 scripts/plot_semijoin_cache.py \
 subset, `--formats png pdf svg` to select output formats, and
 `--scale auto|linear|log` to control the vertical runtime axis. The default
 `log` scale matches the reference drawing style; `auto` selects a logarithmic
-axis only when a suite spans at least 50x. For queries with multiple rewrite
-variants, the figure uses the fastest measured variant. Only queries with all
-required source rows are compared. Graph Q7 and DSB SPJ Q99 are currently
-omitted because the corresponding required rewrite measurements are absent.
+axis only when a suite spans at least 50x. Query order follows each workbook
+sheet, and blank or nonpositive runtime cells are rendered as `N/A`.
 
 - Sub-Graph Pattern Benchmark (SGPB) 
 

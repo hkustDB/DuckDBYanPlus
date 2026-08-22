@@ -4,28 +4,26 @@
 The four plotted systems are:
 
 * DuckDB1.5: native execution.
-* DuckDB1.5-Yan (rewrite): the fastest Yannakakis rewrite variant.
-* DuckDB1.5-Yan+ (rewrite): the fastest Yannakakis+ SQL rewrite variant.
-* DuckDB1.5-Yan+: the modified-kernel implementation.
+* DuckDB1.5-Yan (rewrite): the workbook's Yannakakis rewrite runtime.
+* DuckDB1.5-Yan+ (rewrite): the workbook's Yannakakis+ rewrite runtime.
+* DuckDB1.5-Yan+: the workbook's integrated Yannakakis+ runtime.
 
-Graph's statistics CSV names related measurements q1a/q1b/q1c, q2a/q2b,
-and so on, whereas the two new timing CSVs use q1, q2, ... .  The Graph
-statistics are therefore grouped by numeric query and the fastest positive
-measurement in each group is used.  JOB's Yannakakis+ statistics are stored as
-speedups; their runtimes are reconstructed as native_runtime / speedup.
+All plotted benchmark runtimes are read from the DuckDB 1.5 result workbook.
+Each benchmark sheet uses the same schema: the first column contains query
+names, followed by Origin, Yan, YanPlus_rewrite, and YanPlus runtimes in seconds.
+The legacy CSV files are refresh inputs for the workbook, not figure inputs.
 """
 
 from __future__ import annotations
 
 import argparse
-import csv
 import math
 import os
 import re
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 
 if "MPLCONFIGDIR" not in os.environ:
@@ -46,11 +44,14 @@ from matplotlib.ticker import FuncFormatter
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_DATA_ROOT = Path.home() / "Desktop" / "TODS revision"
+DEFAULT_WORKBOOK_PATH = (
+    Path.home()
+    / "Library"
+    / "CloudStorage"
+    / "OneDrive-HKUSTConnect"
+    / "DuckYan_1_5_results.xlsx"
+)
 DEFAULT_OUTPUT_DIR = REPOSITORY_ROOT / "figures" / "duckdb_v1_5"
-
-KERNEL_DIR = "DuckdbYanPlus_v1.5"
-REWRITE_DIR = "Rewrite_duckdb_1.5"
 
 DUCKDB = "DuckDB1.5"
 YAN_REWRITE = "DuckDB1.5-Yan (rewrite)"
@@ -59,17 +60,30 @@ YANPLUS = r"DuckDB1.5-Yan$^{+}$"
 SERIES_ORDER = (DUCKDB, YAN_REWRITE, YANPLUS_REWRITE, YANPLUS)
 SERIES_STYLE = {
     DUCKDB: {"color": "#1f77b4", "hatch": "-"},
-    YAN_REWRITE: {"color": "#ff7f0e", "hatch": "*"},
+    YAN_REWRITE: {"color": "#D89000", "hatch": "//"},
     YANPLUS_REWRITE: {"color": "#30cf4d", "hatch": "\\"},
     YANPLUS: {"color": "#FFB6C1", "hatch": "||"},
 }
 BAR_EDGE_COLOR = "#505050"
 BAR_LINEWIDTH = 0.3
 TIME_LIMIT_SECONDS = 7200.0
-AXIS_LABEL_SIZE = 16
-TICK_LABEL_SIZE = 12
-SUBGRAPH_TITLE_SIZE = 15
-LEGEND_SIZE = 14
+TIMEOUT_LOG_CEILING_SECONDS = 1.0e4
+JOB_Y_LIMITS = (1.0e-2, 1.0e4)
+MERGED_FIGURE_SIZE = (50.0, 7.0)
+MERGED_AXIS_LABEL_SIZE = 25
+MERGED_TICK_LABEL_SIZE = 25
+MERGED_SUBGRAPH_TITLE_SIZE = 25
+MERGED_LEGEND_SIZE = 23.5
+MERGED_ANNOTATION_SIZE = 12
+JOB_AXIS_LABEL_SIZE = 22.5
+JOB_TICK_LABEL_SIZE = 22
+JOB_LEGEND_SIZE = 22.5
+JOB_ANNOTATION_SIZE = 12
+JOB_FIGURE_COUNT = 5
+JOB_FIGURE_SIZE = (28.0, 5.0)
+JOB_ALL_FIGURE_SIZE = JOB_FIGURE_SIZE
+JOB_GROUP_WIDTH = 0.68
+JOB_FAMILY_RANGES = ((1, 7), (8, 14), (15, 20), (21, 27), (28, 33))
 
 
 @dataclass(frozen=True)
@@ -82,43 +96,6 @@ class FigureData:
     notes: Sequence[str]
 
 
-def read_csv(path: Path) -> List[Dict[str, str]]:
-    if not path.is_file():
-        raise FileNotFoundError(f"missing input file: {path}")
-    with path.open(newline="", encoding="utf-8-sig") as source:
-        rows = list(csv.DictReader(source))
-    if not rows:
-        raise ValueError(f"input file has no data rows: {path}")
-    return rows
-
-
-def positive_number(value: Optional[str], *, path: Path, query: str) -> Optional[float]:
-    if value is None or not value.strip():
-        return None
-    try:
-        number = float(value)
-    except ValueError as error:
-        raise ValueError(f"invalid value for {query!r} in {path}: {value!r}") from error
-    if not math.isfinite(number) or number <= 0:
-        return None
-    return number
-
-
-def natural_key(value: str) -> Tuple[object, ...]:
-    return tuple(
-        int(part) if part.isdigit() else part.lower()
-        for part in re.split(r"(\d+)", value)
-        if part
-    )
-
-
-def require_match(pattern: str, value: str, path: Path) -> str:
-    match = re.fullmatch(pattern, value.strip(), flags=re.IGNORECASE)
-    if not match:
-        raise ValueError(f"unrecognized query name {value!r} in {path}")
-    return match.group(1).lower()
-
-
 def standard_query(value: str, _path: Path) -> str:
     normalized = value.strip().lower()
     if re.fullmatch(r"q\d+", normalized):
@@ -126,246 +103,150 @@ def standard_query(value: str, _path: Path) -> str:
     return normalized
 
 
-def rewrite_query(value: str, path: Path) -> str:
-    base = require_match(r"(.+?)_rewriteya\d+_yannakakis", value, path)
-    return standard_query(base, path)
-
-
-def graph_kernel_query(value: str, path: Path) -> str:
-    return require_match(r"(q\d+)_\d+_rewriter", value, path)
-
-
-def graph_yan_query(value: str, path: Path) -> str:
-    return require_match(r"(q\d+)_rewriteya\d+_yannakakis", value, path)
-
-
-def graph_statistics_query(value: str, path: Path) -> str:
-    number = require_match(r"q(\d+).*", value, path)
-    return f"q{int(number)}"
-
-
-def dsb_current_query(value: str, path: Path) -> str:
-    number = require_match(r"(?:query|q)?0*(\d+)", value, path)
-    return f"q{int(number)}"
-
-
-def dsb_rewrite_query(value: str, path: Path) -> str:
-    number = require_match(r"q?0*(\d+)_r_rewriter", value, path)
-    return f"q{int(number)}"
-
-
-def update_fastest(result: Dict[str, Optional[float]], query: str, value: Optional[float]):
-    if query not in result:
-        result[query] = value
-    elif value is not None and (result[query] is None or value < result[query]):
-        result[query] = value
-
-
-def grouped_column(
-    path: Path,
-    query_column: str,
-    value_column: str,
-    normalizer: Callable[[str, Path], str],
-) -> Dict[str, Optional[float]]:
-    result: Dict[str, Optional[float]] = {}
-    for row in read_csv(path):
-        raw_query = row[query_column]
-        query = normalizer(raw_query, path)
-        value = positive_number(row.get(value_column), path=path, query=raw_query)
-        update_fastest(result, query, value)
-    return result
-
-
-def current_native_and_kernel(
-    path: Path, normalizer: Callable[[str, Path], str]
-) -> Tuple[Dict[str, Optional[float]], Dict[str, Optional[float]]]:
-    native: Dict[str, Optional[float]] = {}
-    kernel: Dict[str, Optional[float]] = {}
-    for row in read_csv(path):
-        query = normalizer(row["Query"], path)
-        native[query] = positive_number(row.get("origin"), path=path, query=row["Query"])
-        kernel[query] = positive_number(row.get("yanplus"), path=path, query=row["Query"])
-    return native, kernel
-
-
-def common_query_ids(suite: str, sources: Sequence[Mapping[str, object]]):
-    query_ids = set(sources[0])
-    for source in sources[1:]:
-        query_ids &= set(source)
-    if not query_ids:
-        raise ValueError(f"{suite}: no common query names across the required sources")
-
-    common = sorted(query_ids, key=natural_key)
-    notes = []
-    union = set().union(*(set(source) for source in sources))
-    omitted = sorted(union - query_ids, key=natural_key)
-    if omitted:
-        notes.append(f"queries without all required sources omitted: {', '.join(omitted)}")
-    return common, notes
-
-
 def display_query(query: str) -> str:
     return query.upper() if query.startswith("q") else f"Q{query.upper()}"
 
 
-def load_standard_suite(data_root: Path, slug: str, title: str) -> FigureData:
-    current_filename = {
-        "lsqb": "timing_summary_lsqb.csv",
-        "tpch": "timing_summary_tpch.csv",
-        "job": "timing_summary_job_agg.csv",
-    }[slug]
-    yan_filename = f"timing_summary_yannakakis_rewrite_{slug}.csv"
-    statistics_filename = f"summary_{slug}_statistics.csv"
+WORKBOOK_COLUMN_SERIES = {
+    "Origin": DUCKDB,
+    "Yan": YAN_REWRITE,
+    "YanPlus_rewrite": YANPLUS_REWRITE,
+    "YanPlus": YANPLUS,
+}
 
-    current_path = data_root / KERNEL_DIR / current_filename
-    yan_path = data_root / REWRITE_DIR / yan_filename
-    statistics_path = data_root / REWRITE_DIR / statistics_filename
 
-    native, kernel = current_native_and_kernel(current_path, standard_query)
-    yan_rewrite = grouped_column(
-        yan_path, "Query", "Average_Time", rewrite_query
-    )
+def workbook_sheet_rows(
+    path: Path, sheet_name: str
+) -> Tuple[List[str], Dict[str, List[Optional[float]]]]:
+    """Read one benchmark sheet in row order from the authoritative workbook."""
 
-    if slug == "job":
-        speedups = grouped_column(
-            statistics_path,
-            "JOB",
-            "DuckDB Yannakakis+ speedup",
-            standard_query,
+    try:
+        from openpyxl import load_workbook
+    except ImportError as error:
+        raise RuntimeError(
+            "openpyxl is required to read the DuckDB 1.5 benchmark workbook"
+        ) from error
+
+    if not path.is_file():
+        raise FileNotFoundError(f"missing benchmark workbook: {path}")
+    workbook = load_workbook(path, read_only=True, data_only=True)
+    try:
+        if sheet_name not in workbook.sheetnames:
+            raise ValueError(f"{path} has no {sheet_name!r} worksheet")
+        rows = list(workbook[sheet_name].iter_rows(values_only=True))
+    finally:
+        workbook.close()
+
+    if len(rows) < 2:
+        raise ValueError(f"{path}/{sheet_name} has no benchmark data rows")
+    headers = [str(value).strip() if value is not None else "" for value in rows[0]]
+    required = tuple(WORKBOOK_COLUMN_SERIES)
+    missing = [column for column in required if column not in headers]
+    if missing:
+        raise ValueError(
+            f"{path}/{sheet_name} is missing columns: {', '.join(missing)}"
         )
-        yanplus_rewrite = {
-            query: (
-                native[query] / speedup
-                if native.get(query) is not None and speedup is not None
-                else None
+
+    query_ids: List[str] = []
+    seen_queries = set()
+    values_by_column: Dict[str, List[Optional[float]]] = {
+        column: [] for column in required
+    }
+    for row_number, row in enumerate(rows[1:], start=2):
+        raw_query = row[0] if row else None
+        if raw_query is None or not str(raw_query).strip():
+            continue
+        query = standard_query(str(raw_query), path)
+        if query in seen_queries:
+            raise ValueError(
+                f"duplicate query {raw_query!r} at {path}/{sheet_name}!A{row_number}"
             )
-            for query, speedup in speedups.items()
-        }
-        conversion_note = (
-            "DuckDB1.5-Yan+ rewrite runtimes are DuckDB1.5 runtime divided by "
-            "the reported Yannakakis+ speedup."
-        )
-    else:
-        yanplus_rewrite = grouped_column(
-            statistics_path, "Query", "DuckDB rewrite", standard_query
-        )
-        conversion_note = None
+        seen_queries.add(query)
+        query_ids.append(query)
 
-    query_ids, notes = common_query_ids(
-        slug, (native, kernel, yan_rewrite, yanplus_rewrite)
+        for column in required:
+            column_index = headers.index(column)
+            raw_value = row[column_index] if column_index < len(row) else None
+            if raw_value is None or not str(raw_value).strip():
+                values_by_column[column].append(None)
+                continue
+            try:
+                value = float(raw_value)
+            except (TypeError, ValueError) as error:
+                raise ValueError(
+                    f"invalid {column!r} value for {raw_query!r} at "
+                    f"{path}/{sheet_name}!{row_number}"
+                ) from error
+            values_by_column[column].append(
+                value if math.isfinite(value) and value > 0 else None
+            )
+
+    if not query_ids:
+        raise ValueError(f"{path}/{sheet_name} has no named benchmark queries")
+    return query_ids, values_by_column
+
+
+def load_workbook_suite(
+    workbook_path: Path,
+    sheet_name: str,
+    slug: str,
+    title: str,
+) -> FigureData:
+    query_ids, values_by_column = workbook_sheet_rows(workbook_path, sheet_name)
+    series = {
+        WORKBOOK_COLUMN_SERIES[column]: values
+        for column, values in values_by_column.items()
+        if any(value is not None for value in values)
+    }
+    missing_cells = sum(
+        value is None for values in values_by_column.values() for value in values
     )
-    if conversion_note:
-        notes.append(conversion_note)
-
+    notes = [f"all runtimes loaded from workbook sheet {sheet_name!r}"]
+    if missing_cells:
+        notes.append(f"{missing_cells} unavailable workbook values are shown as N/A")
     return FigureData(
         slug=slug,
         title=title,
         query_ids=query_ids,
         query_labels=[display_query(query) for query in query_ids],
-        series={
-            DUCKDB: [native.get(query) for query in query_ids],
-            YAN_REWRITE: [yan_rewrite.get(query) for query in query_ids],
-            YANPLUS_REWRITE: [yanplus_rewrite.get(query) for query in query_ids],
-            YANPLUS: [kernel.get(query) for query in query_ids],
-        },
+        series=series,
         notes=notes,
     )
 
 
-def load_graph(data_root: Path) -> FigureData:
-    kernel_path = data_root / KERNEL_DIR / "timing_summary_graph.csv"
-    yan_path = data_root / REWRITE_DIR / "timing_summary_yannakakis_rewrite_graph.csv"
-    statistics_path = data_root / REWRITE_DIR / "summary_graph_statistics.csv"
-
-    kernel = grouped_column(
-        kernel_path, "Query", "Average_Time", graph_kernel_query
-    )
-    yan_rewrite = grouped_column(
-        yan_path, "Query", "Average_Time", graph_yan_query
-    )
-    native = grouped_column(
-        statistics_path, "Query", "DuckDB native", graph_statistics_query
-    )
-    yanplus_rewrite = grouped_column(
-        statistics_path, "Query", "DuckDB rewrite", graph_statistics_query
-    )
-    query_ids, notes = common_query_ids(
-        "graph", (native, yan_rewrite, yanplus_rewrite, kernel)
-    )
-    notes.append(
-        "Graph qNa/qNb/qNc statistics are collapsed to the fastest positive "
-        "measurement for numeric query qN."
-    )
-
-    return FigureData(
-        slug="graph",
-        title="Graph",
-        query_ids=query_ids,
-        query_labels=[query.upper() for query in query_ids],
-        series={
-            DUCKDB: [native.get(query) for query in query_ids],
-            YAN_REWRITE: [yan_rewrite.get(query) for query in query_ids],
-            YANPLUS_REWRITE: [yanplus_rewrite.get(query) for query in query_ids],
-            YANPLUS: [kernel.get(query) for query in query_ids],
-        },
-        notes=notes,
-    )
-
-
-def load_dsb_part(data_root: Path, part: str):
-    current_path = data_root / KERNEL_DIR / f"timing_summary_dsb_{part}.csv"
-    rewrite_path = data_root / REWRITE_DIR / f"timing_summary_dsb_{part}_rewrite.csv"
-    native, kernel = current_native_and_kernel(current_path, dsb_current_query)
-    yanplus_rewrite = grouped_column(
-        rewrite_path, "Query", "Average_Time", dsb_rewrite_query
-    )
-    query_ids, notes = common_query_ids(
-        f"dsb-{part}", (native, kernel, yanplus_rewrite)
-    )
-    return query_ids, native, kernel, yanplus_rewrite, notes
-
-
-def load_dsb(data_root: Path) -> FigureData:
+def load_workbook_dsb(workbook_path: Path) -> FigureData:
     query_ids: List[str] = []
-    labels: List[str] = []
-    native_values: List[Optional[float]] = []
-    yanplus_rewrite_values: List[Optional[float]] = []
-    kernel_values: List[Optional[float]] = []
-    notes = ["No DuckDB1.5-Yan rewrite timing file is present for DSB."]
+    query_labels: List[str] = []
+    combined_series: Dict[str, List[Optional[float]]] = {
+        series_name: [] for series_name in SERIES_ORDER
+    }
+    missing_cells = 0
 
-    for part, prefix in (("spj", "SPJ"), ("agg", "AGG")):
-        part_ids, native, kernel, yanplus_rewrite, part_notes = load_dsb_part(
-            data_root, part
-        )
+    for sheet_name, prefix in (("dsbspj", "SPJ"), ("dsbagg", "AGG")):
+        part_ids, values_by_column = workbook_sheet_rows(workbook_path, sheet_name)
         query_ids.extend(f"{prefix.lower()}-{query}" for query in part_ids)
-        labels.extend(f"{prefix}-{query.upper()}" for query in part_ids)
-        native_values.extend(native.get(query) for query in part_ids)
-        yanplus_rewrite_values.extend(yanplus_rewrite.get(query) for query in part_ids)
-        kernel_values.extend(kernel.get(query) for query in part_ids)
-        notes.extend(f"{prefix}: {note}" for note in part_notes)
+        query_labels.extend(f"{prefix}-Q{query.upper()}" for query in part_ids)
+        for column, series_name in WORKBOOK_COLUMN_SERIES.items():
+            values = values_by_column[column]
+            combined_series[series_name].extend(values)
+            missing_cells += sum(value is None for value in values)
 
+    series = {
+        series_name: values
+        for series_name, values in combined_series.items()
+        if any(value is not None for value in values)
+    }
+    notes = ["all runtimes loaded from workbook sheets 'dsbspj' and 'dsbagg'"]
+    if missing_cells:
+        notes.append(f"{missing_cells} unavailable workbook values are shown as N/A")
     return FigureData(
         slug="dsb",
         title="DSB",
         query_ids=query_ids,
-        query_labels=labels,
-        series={
-            DUCKDB: native_values,
-            YANPLUS_REWRITE: yanplus_rewrite_values,
-            YANPLUS: kernel_values,
-        },
+        query_labels=query_labels,
+        series=series,
         notes=notes,
     )
-
-
-def load_all(data_root: Path) -> Dict[str, FigureData]:
-    return {
-        "graph": load_graph(data_root),
-        "lsqb": load_standard_suite(data_root, "lsqb", "LSQB"),
-        "tpch": load_standard_suite(data_root, "tpch", "TPC-H"),
-        "job": load_standard_suite(data_root, "job", "JOB"),
-        "dsb": load_dsb(data_root),
-    }
 
 
 def choose_scale(values: Iterable[float], requested: str) -> str:
@@ -382,7 +263,7 @@ def format_runtime_axis(axis, active_scale: str, values: Sequence[float]) -> Non
     if active_scale != "log":
         positive = [value for value in values if value > 0]
         if any(value >= TIME_LIMIT_SECONDS for value in positive):
-            axis.set_ylim(0, max(positive))
+            axis.set_ylim(0, TIME_LIMIT_SECONDS)
         else:
             axis.margins(y=0.05)
         return
@@ -391,10 +272,16 @@ def format_runtime_axis(axis, active_scale: str, values: Sequence[float]) -> Non
     positive = [value for value in values if value > 0]
     if positive:
         lower = 10 ** math.floor(math.log10(min(positive)))
-        upper = 10 ** math.ceil(math.log10(max(positive)))
+        if any(value >= TIME_LIMIT_SECONDS for value in positive):
+            upper = TIMEOUT_LOG_CEILING_SECONDS
+        else:
+            upper = 10 ** math.ceil(math.log10(max(positive)))
         if min(positive) / lower < 1.05:
             lower /= 10
-        if upper / max(positive) < 1.05:
+        if (
+            not any(value >= TIME_LIMIT_SECONDS for value in positive)
+            and upper / max(positive) < 1.05
+        ):
             upper *= 10
         axis.set_ylim(lower, upper)
 
@@ -404,7 +291,12 @@ def timeout_ceiling(active_scale: str, values: Sequence[float]) -> float:
     if not positive:
         return TIME_LIMIT_SECONDS
     if active_scale != "log":
-        return max(positive)
+        return TIME_LIMIT_SECONDS if any(
+            value >= TIME_LIMIT_SECONDS for value in positive
+        ) else max(positive)
+
+    if any(value >= TIME_LIMIT_SECONDS for value in positive):
+        return TIMEOUT_LOG_CEILING_SECONDS
 
     upper = 10 ** math.ceil(math.log10(max(positive)))
     if upper / max(positive) < 1.05:
@@ -422,10 +314,14 @@ def plot_panel(
     axis,
     data: FigureData,
     requested_scale: str,
+    reference_values: Optional[Sequence[float]] = None,
+    query_slots: Optional[int] = None,
+    group_width: float = 0.88,
 ):
     series_names = [name for name in SERIES_ORDER if name in data.series]
     query_count = len(data.query_labels)
-    group_width = 0.88
+    if not 0 < group_width <= 1:
+        raise ValueError("group_width must be greater than 0 and no greater than 1")
     bar_width = group_width / len(series_names)
     centers = list(range(query_count))
     all_values = [
@@ -434,8 +330,9 @@ def plot_panel(
         for value in values
         if value is not None and value > 0
     ]
-    active_scale = choose_scale(all_values, requested_scale)
-    ceiling = timeout_ceiling(active_scale, all_values)
+    scale_values = list(reference_values) if reference_values is not None else all_values
+    active_scale = choose_scale(scale_values, requested_scale)
+    ceiling = timeout_ceiling(active_scale, scale_values)
 
     for series_index, series_name in enumerate(series_names):
         offset = -group_width / 2 + bar_width / 2 + series_index * bar_width
@@ -468,21 +365,24 @@ def plot_panel(
                     rotation=90,
                     ha="center",
                     va="bottom",
-                    fontsize=6,
+                    fontsize=JOB_ANNOTATION_SIZE,
                     color="#555555",
                 )
 
-    axis.set_ylabel("Running Time (Sec)", fontsize=AXIS_LABEL_SIZE)
+    axis.set_ylabel("Running Time (Sec)", fontsize=JOB_AXIS_LABEL_SIZE)
     axis.set_xticks(centers)
     axis.set_xticklabels(
         data.query_labels,
         rotation=0,
         ha="center",
-        fontsize=TICK_LABEL_SIZE,
+        fontsize=JOB_TICK_LABEL_SIZE,
     )
-    axis.tick_params(axis="y", labelsize=TICK_LABEL_SIZE)
-    format_runtime_axis(axis, active_scale, all_values)
-    axis.set_xlim(-0.52, query_count - 0.48)
+    axis.tick_params(axis="y", labelsize=JOB_TICK_LABEL_SIZE)
+    format_runtime_axis(axis, active_scale, scale_values)
+    slot_count = query_count if query_slots is None else query_slots
+    if slot_count < query_count:
+        raise ValueError("query_slots cannot be smaller than the number of plotted queries")
+    axis.set_xlim(-0.52, slot_count - 0.48)
     axis.grid(True, which="major", linestyle="--", linewidth=0.5, zorder=0)
     axis.set_axisbelow(True)
     return active_scale
@@ -541,7 +441,7 @@ def plot_combined_axis(axis, panels: Sequence[FigureData], requested_scale: str)
                         rotation=90,
                         ha="center",
                         va="bottom",
-                        fontsize=6,
+                        fontsize=MERGED_ANNOTATION_SIZE,
                         color="#555555",
                     )
         cursor += len(panel.query_ids)
@@ -550,25 +450,26 @@ def plot_combined_axis(axis, panels: Sequence[FigureData], requested_scale: str)
         midpoint = (first + last) / 2
         axis.text(
             midpoint,
-            -0.105,
+            -0.075,
             title,
             transform=axis.get_xaxis_transform(),
             ha="center",
             va="top",
-            fontsize=SUBGRAPH_TITLE_SIZE,
+            fontsize=MERGED_SUBGRAPH_TITLE_SIZE,
             clip_on=False,
         )
 
     centers = list(range(len(query_labels)))
-    axis.set_ylabel("Running Time (Sec)", fontsize=AXIS_LABEL_SIZE)
+    axis.set_ylabel("Running Time (Sec)", fontsize=MERGED_AXIS_LABEL_SIZE)
     axis.set_xticks(centers)
     axis.set_xticklabels(
         query_labels,
         rotation=0,
         ha="center",
-        fontsize=TICK_LABEL_SIZE,
+        fontsize=MERGED_TICK_LABEL_SIZE,
     )
-    axis.tick_params(axis="y", labelsize=TICK_LABEL_SIZE)
+    axis.tick_params(axis="x", pad=2)
+    axis.tick_params(axis="y", labelsize=MERGED_TICK_LABEL_SIZE)
     format_runtime_axis(axis, active_scale, all_values)
     axis.set_xlim(-0.52, len(query_labels) - 0.48)
     axis.grid(True, which="major", linestyle="--", linewidth=0.5, zorder=0)
@@ -590,12 +491,25 @@ def legend_handles(series_names: Sequence[str]):
     ]
 
 
-def save_figure(figure, output_dir: Path, basename: str, formats: Sequence[str], dpi: int):
+def save_figure(
+    figure,
+    output_dir: Path,
+    basename: str,
+    formats: Sequence[str],
+    dpi: int,
+    *,
+    tight: bool = True,
+):
     output_dir.mkdir(parents=True, exist_ok=True)
     destinations = []
     for extension in formats:
         destination = output_dir / f"{basename}.{extension}"
-        figure.savefig(destination, dpi=dpi, bbox_inches="tight")
+        figure.savefig(
+            destination,
+            dpi=dpi,
+            bbox_inches="tight" if tight else None,
+            facecolor="white",
+        )
         destinations.append(destination)
     plt.close(figure)
     return destinations
@@ -609,9 +523,7 @@ def plot_merged(
     dpi: int,
     scale: str,
 ):
-    query_count = sum(len(panel.query_ids) for panel in panels)
-    width = min(35.0, max(16.0, 2.0 + 0.9 * query_count))
-    figure, axis = plt.subplots(figsize=(width, 7.5))
+    figure, axis = plt.subplots(figsize=MERGED_FIGURE_SIZE)
     active_scale = plot_combined_axis(axis, panels, scale)
 
     present_series = {
@@ -620,17 +532,46 @@ def plot_merged(
     axis.legend(
         handles=legend_handles(tuple(present_series)),
         loc="lower center",
-        bbox_to_anchor=(0.5, 1.01),
+        bbox_to_anchor=(0.5, 1.15),
         ncol=min(4, len(present_series)),
         frameon=False,
-        fontsize=LEGEND_SIZE,
+        fontsize=MERGED_LEGEND_SIZE,
         borderaxespad=0,
     )
-    figure.subplots_adjust(top=0.92, bottom=0.17, left=0.065, right=0.995)
-    return save_figure(figure, output_dir, basename, formats, dpi), active_scale
+    figure.subplots_adjust(top=0.83, bottom=0.19, left=0.04, right=0.99)
+    return (
+        save_figure(
+            figure,
+            output_dir,
+            basename,
+            formats,
+            dpi,
+            tight=False,
+        ),
+        active_scale,
+    )
 
 
-def subset(data: FigureData, first_family: int, last_family: int) -> FigureData:
+def subset_indices(data: FigureData, first_index: int, last_index: int) -> FigureData:
+    indices = list(range(first_index, min(last_index, len(data.query_ids))))
+    if not indices:
+        raise ValueError(f"JOB partition {first_index + 1}-{last_index} is empty")
+    return FigureData(
+        slug=f"job_figure_{first_index + 1}_{min(last_index, len(data.query_ids))}",
+        title=f"JOB queries {first_index + 1}-{min(last_index, len(data.query_ids))}",
+        query_ids=[data.query_ids[index] for index in indices],
+        query_labels=[data.query_labels[index] for index in indices],
+        series={
+            name: [values[index] for index in indices]
+            for name, values in data.series.items()
+        },
+        notes=data.notes,
+    )
+
+
+def subset_families(
+    data: FigureData, first_family: int, last_family: int
+) -> FigureData:
     indices = []
     for index, query in enumerate(data.query_ids):
         match = re.match(r"(\d+)", query)
@@ -651,6 +592,66 @@ def subset(data: FigureData, first_family: int, last_family: int) -> FigureData:
     )
 
 
+def plot_job_family_partitions(
+    data: FigureData,
+    output_dir: Path,
+    formats: Sequence[str],
+    dpi: int,
+    scale: str,
+):
+    panels = [
+        (first_family, last_family, subset_families(data, first_family, last_family))
+        for first_family, last_family in JOB_FAMILY_RANGES
+    ]
+    reference_values = [
+        value
+        for values in data.series.values()
+        for value in values
+        if value is not None and value > 0
+    ]
+    results = []
+    for partition_index, (first_family, last_family, panel) in enumerate(panels):
+        figure, axis = plt.subplots(figsize=JOB_FIGURE_SIZE)
+        active_scale = plot_panel(
+            axis,
+            panel,
+            scale,
+            reference_values=reference_values,
+            group_width=JOB_GROUP_WIDTH,
+        )
+        axis.set_ylim(*JOB_Y_LIMITS)
+        if partition_index == 0:
+            axis.legend(
+                handles=legend_handles(tuple(panel.series)),
+                loc="lower center",
+                bbox_to_anchor=(0.5, 1.01),
+                ncol=4,
+                frameon=False,
+                fontsize=JOB_LEGEND_SIZE,
+                borderaxespad=0,
+            )
+        figure.subplots_adjust(top=0.89, bottom=0.10, left=0.065, right=0.995)
+        basename = f"job_benchmark_{first_family}_{last_family}"
+        destinations = save_figure(
+            figure,
+            output_dir,
+            basename,
+            formats,
+            dpi,
+            tight=False,
+        )
+        results.append(
+            (
+                basename,
+                destinations,
+                active_scale,
+                len(panel.query_ids),
+                len(panel.query_ids),
+            )
+        )
+    return results
+
+
 def plot_job_partitions(
     data: FigureData,
     output_dir: Path,
@@ -659,44 +660,122 @@ def plot_job_partitions(
     scale: str,
 ):
     results = []
-    for first_family, last_family in ((1, 7), (8, 14), (15, 20), (21, 27), (28, 33)):
-        panel = subset(data, first_family, last_family)
-        width = min(35.0, max(14.0, 2.5 + 0.7 * len(panel.query_ids)))
-        figure, axis = plt.subplots(figsize=(width, 7.5))
+    slots_per_figure = math.ceil(len(data.query_ids) / JOB_FIGURE_COUNT)
+    reference_values = [
+        value
+        for values in data.series.values()
+        for value in values
+        if value is not None and value > 0
+    ]
+    for figure_number in range(1, JOB_FIGURE_COUNT + 1):
+        first_index = (figure_number - 1) * slots_per_figure
+        last_index = first_index + slots_per_figure
+        panel = subset_indices(data, first_index, last_index)
+        figure, axis = plt.subplots(figsize=JOB_FIGURE_SIZE)
         active_scale = plot_panel(
             axis,
             panel,
             scale,
+            reference_values=reference_values,
+            group_width=JOB_GROUP_WIDTH,
         )
-        axis.legend(
-            handles=legend_handles(tuple(panel.series)),
-            loc="lower center",
-            bbox_to_anchor=(0.5, 1.01),
-            ncol=4,
-            frameon=False,
-            fontsize=LEGEND_SIZE,
-            borderaxespad=0,
+        axis.set_ylim(*JOB_Y_LIMITS)
+        if figure_number == 1:
+            axis.legend(
+                handles=legend_handles(tuple(panel.series)),
+                loc="lower center",
+                bbox_to_anchor=(0.5, 1.01),
+                ncol=4,
+                frameon=False,
+                fontsize=JOB_LEGEND_SIZE,
+                borderaxespad=0,
+            )
+        figure.subplots_adjust(top=0.89, bottom=0.10, left=0.065, right=0.995)
+        basename = f"job_benchmark_figure_{figure_number}"
+        destinations = save_figure(
+            figure,
+            output_dir,
+            basename,
+            formats,
+            dpi,
+            tight=False,
         )
-        figure.subplots_adjust(top=0.92, bottom=0.10, left=0.065, right=0.995)
-        basename = f"job_benchmark_{first_family}_{last_family}"
-        destinations = save_figure(figure, output_dir, basename, formats, dpi)
-        results.append((basename, destinations, active_scale, len(panel.query_ids)))
+        results.append(
+            (
+                basename,
+                destinations,
+                active_scale,
+                len(panel.query_ids),
+                len(panel.query_ids),
+            )
+        )
     return results
+
+
+def plot_job_all(
+    data: FigureData,
+    output_dir: Path,
+    formats: Sequence[str],
+    dpi: int,
+    scale: str,
+):
+    reference_values = [
+        value
+        for values in data.series.values()
+        for value in values
+        if value is not None and value > 0
+    ]
+    figure, axis = plt.subplots(figsize=JOB_ALL_FIGURE_SIZE)
+    active_scale = plot_panel(
+        axis,
+        data,
+        scale,
+        reference_values=reference_values,
+        group_width=JOB_GROUP_WIDTH,
+    )
+    axis.set_ylim(*JOB_Y_LIMITS)
+    labeled_indices = list(range(0, len(data.query_labels), 5))
+    axis.set_xticks(labeled_indices)
+    axis.set_xticklabels(
+        [data.query_labels[index] for index in labeled_indices],
+        rotation=0,
+        ha="center",
+        fontsize=JOB_TICK_LABEL_SIZE,
+    )
+    axis.legend(
+        handles=legend_handles(tuple(data.series)),
+        loc="lower center",
+        bbox_to_anchor=(0.5, 1.01),
+        ncol=4,
+        frameon=False,
+        fontsize=JOB_LEGEND_SIZE,
+        borderaxespad=0,
+    )
+    figure.subplots_adjust(top=0.89, bottom=0.10, left=0.065, right=0.995)
+    destinations = save_figure(
+        figure,
+        output_dir,
+        "job_benchmark_all",
+        formats,
+        dpi,
+        tight=False,
+    )
+    return destinations, active_scale, len(data.query_ids)
 
 
 def parse_args(argv: Optional[Sequence[str]] = None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--data-root",
-        type=Path,
-        default=DEFAULT_DATA_ROOT,
-        help=f"result root (default: {DEFAULT_DATA_ROOT})",
-    )
-    parser.add_argument(
         "--output-dir",
         type=Path,
         default=DEFAULT_OUTPUT_DIR,
         help=f"figure destination (default: {DEFAULT_OUTPUT_DIR})",
+    )
+    parser.add_argument(
+        "--workbook",
+        type=Path,
+        default=DEFAULT_WORKBOOK_PATH,
+        help=f"authoritative benchmark result workbook (default: {DEFAULT_WORKBOOK_PATH})",
     )
     parser.add_argument(
         "--benchmarks",
@@ -709,10 +788,15 @@ def parse_args(argv: Optional[Sequence[str]] = None):
         "--formats",
         nargs="+",
         choices=("png", "pdf", "svg"),
-        default=("png", "pdf"),
+        default=("pdf",),
         help="output formats",
     )
-    parser.add_argument("--dpi", type=int, default=220, help="PNG resolution")
+    parser.add_argument(
+        "--dpi",
+        type=int,
+        default=1200,
+        help="rasterization resolution for saved figures (default: 1200 dpi)",
+    )
     parser.add_argument(
         "--scale",
         choices=("auto", "linear", "log"),
@@ -730,7 +814,7 @@ def report_notes(panels: Sequence[FigureData]):
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parse_args(argv)
-    data_root = args.data_root.expanduser().resolve()
+    workbook_path = args.workbook.expanduser().resolve()
     output_dir = args.output_dir.expanduser().resolve()
     formats = tuple(dict.fromkeys(args.formats))
     selected = (
@@ -739,11 +823,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         else set(args.benchmarks)
     )
     loaders = {
-        "graph": lambda: load_graph(data_root),
-        "lsqb": lambda: load_standard_suite(data_root, "lsqb", "LSQB"),
-        "tpch": lambda: load_standard_suite(data_root, "tpch", "TPC-H"),
-        "job": lambda: load_standard_suite(data_root, "job", "JOB"),
-        "dsb": lambda: load_dsb(data_root),
+        "graph": lambda: load_workbook_suite(
+            workbook_path, "graph", "graph", "Graph"
+        ),
+        "lsqb": lambda: load_workbook_suite(
+            workbook_path, "lsqb", "lsqb", "LSQB"
+        ),
+        "tpch": lambda: load_workbook_suite(
+            workbook_path, "tpch", "tpch", "TPC-H"
+        ),
+        "job": lambda: load_workbook_suite(
+            workbook_path, "job", "job", "JOB"
+        ),
+        "dsb": lambda: load_workbook_dsb(workbook_path),
     }
     available = {name: loaders[name]() for name in selected}
 
@@ -784,13 +876,29 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         report_notes(tpch_dsb)
 
     if "job" in selected:
-        for basename, destinations, active_scale, count in plot_job_partitions(
+        for basename, destinations, active_scale, count, slots in plot_job_family_partitions(
             available["job"], output_dir, formats, args.dpi, args.scale
         ):
             print(
-                f"{basename}: {count} queries, {active_scale} scale -> "
+                f"{basename}: {count} queries in {slots} plot slots, "
+                f"{active_scale} scale -> "
                 + ", ".join(str(path) for path in destinations)
             )
+        for basename, destinations, active_scale, count, slots in plot_job_partitions(
+            available["job"], output_dir, formats, args.dpi, args.scale
+        ):
+            print(
+                f"{basename}: {count} queries in {slots} plot slots, "
+                f"{active_scale} scale -> "
+                + ", ".join(str(path) for path in destinations)
+            )
+        destinations, active_scale, count = plot_job_all(
+            available["job"], output_dir, formats, args.dpi, args.scale
+        )
+        print(
+            f"job_benchmark_all: {count} queries, {active_scale} scale -> "
+            + ", ".join(str(path) for path in destinations)
+        )
         report_notes((available["job"],))
     return 0
 

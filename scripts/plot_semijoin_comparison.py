@@ -1,4 +1,4 @@
-"""Plot Bloom and Hash runtime for the Q5 semi-join comparison variants."""
+"""Plot Bloom Filter and Hash Filter runtime for the Q5 semi-join variants."""
 
 from __future__ import annotations
 
@@ -30,10 +30,11 @@ from matplotlib.ticker import FuncFormatter
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_INPUT = Path.home() / "Desktop" / "TODS revision" / "semijoin_comparison_results.csv"
 DEFAULT_OUTPUT_DIR = REPOSITORY_ROOT / "figures" / "duckdb_v1_5"
+STANDALONE_FIGURE_SIZE = (7.4, 4.7)
 
 BACKEND_STYLE = {
-    "Bloom": {"color": "#4477AA", "hatch": "//"},
-    "Hash": {"color": "#CC6677", "hatch": "\\\\"},
+    "Bloom": {"label": "Bloom Filter", "color": "#4477AA", "hatch": "//"},
+    "Hash": {"label": "Hash Filter", "color": "#CC6677", "hatch": "\\\\"},
 }
 plt.rcParams["hatch.linewidth"] = 0.6
 
@@ -82,11 +83,10 @@ def positive_number(row: Dict[str, str], column: str, path: Path) -> float:
 
 def plot(path: Path, output_dir: Path, formats: Sequence[str], dpi: int):
     rows = read_q5_rows(path)
-    labels = [f"q5_v{index}" for index in range(1, len(rows) + 1)]
+    labels = [f"Q5{chr(ord('a') + index)}" for index in range(len(rows))]
     centers = list(range(len(rows)))
-    width = max(12.0, 1.7 * len(rows))
-    figure, axis = plt.subplots(figsize=(width, 6.3))
-    bar_width = 0.38
+    figure, axis = plt.subplots(figsize=STANDALONE_FIGURE_SIZE)
+    bar_width = 0.28
     medians = {}
 
     for backend_index, backend in enumerate(("Bloom", "Hash")):
@@ -103,7 +103,7 @@ def plot(path: Path, output_dir: Path, formats: Sequence[str], dpi: int):
             positions,
             backend_medians,
             width=bar_width,
-            label=backend,
+            label=style["label"],
             color=style["color"],
             edgecolor="#505050",
             linewidth=0.3,
@@ -148,13 +148,13 @@ def plot(path: Path, output_dir: Path, formats: Sequence[str], dpi: int):
         borderaxespad=0,
     )
     axis.margins(x=0.08)
-    figure.subplots_adjust(top=0.88, bottom=0.12, left=0.09, right=0.995)
+    figure.subplots_adjust(top=0.86, bottom=0.14, left=0.14, right=0.98)
 
     output_dir.mkdir(parents=True, exist_ok=True)
     destinations = []
     for extension in formats:
         destination = output_dir / f"semijoin_comparison.{extension}"
-        figure.savefig(destination, dpi=dpi, bbox_inches="tight")
+        figure.savefig(destination, dpi=dpi, facecolor="white")
         destinations.append(destination)
     plt.close(figure)
     return destinations, labels, speedups
@@ -176,7 +176,7 @@ def parse_args(argv: Optional[Sequence[str]] = None):
         default=("png", "pdf"),
         help="output formats",
     )
-    parser.add_argument("--dpi", type=int, default=220, help="PNG resolution")
+    parser.add_argument("--dpi", type=int, default=1200, help="PNG resolution")
     return parser.parse_args(argv)
 
 
@@ -192,7 +192,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         f"{label}={speedup:.3f}x" for label, speedup in zip(labels, speedups)
     )
     print(
-        f"Q5 Bloom/Hash bars ({summary}) -> "
+        f"Q5 Bloom Filter/Hash Filter bars ({summary}) -> "
         + ", ".join(str(path) for path in destinations)
     )
     return 0

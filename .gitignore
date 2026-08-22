@@ -330,6 +330,7 @@ benchmark/taxi/data/
 # Benchmarks
 .last_benchmarked_commit
 benchmark_results/
+robustness/results/
 duckdb_unittest_tempdir/
 grammar.y.tmp
 src/amalgamation/
@@ -372,3 +373,4 @@ extension_external
 
 test/sql/pragma/output.json
 tools/pythonpkg/duckdb_build/
+outputs/*
