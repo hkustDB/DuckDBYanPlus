@@ -479,7 +479,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--repetitions", type=int, default=10)
     parser.add_argument("--warmups", type=int, default=1)
     parser.add_argument("--seed", type=int, default=20260822)
-    parser.add_argument("--timeout", type=int, default=7200, help="per-process seconds")
+    parser.add_argument("--timeout", type=int, default=600, help="per-process seconds")
     parser.add_argument(
         "--output-dir", type=pathlib.Path, default=ROOT / "results" / timestamp
     )

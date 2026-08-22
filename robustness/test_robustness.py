@@ -27,7 +27,7 @@ class SqlPreparationTest(unittest.TestCase):
         self.assertEqual(args.repetitions, 10)
         self.assertEqual(args.warmups, 1)
         self.assertEqual(args.seed, 20260822)
-        self.assertEqual(args.timeout, 7200)
+        self.assertEqual(args.timeout, 600)
 
     def test_split_and_temporary_view_conversion(self) -> None:
         sql = """-- a semicolon in a comment ;

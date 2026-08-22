@@ -364,9 +364,9 @@ python3 robustness/run_experiment.py
 ```
 
 The defaults are 64 DuckDB threads, Linux CPU list `0-31,36-67`, ten measured
-repetitions, one warm-up per repetition, seed `20260822`, and a two-hour
-per-process timeout. Pass `--cpu-list none` only on a machine where Linux CPU
-pinning is unavailable.
+repetitions, one warm-up per repetition, seed `20260822`, and a ten-minute
+per-plan process timeout. Pass `--cpu-list none` only on a machine where Linux
+CPU pinning is unavailable.
 
 Before timing, every rewrite must return exactly the same result as its
 `query.sql`. Valid plans are then run in globally randomized repetition blocks,

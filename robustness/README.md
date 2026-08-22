@@ -45,7 +45,7 @@ The defaults are:
 | Measured repetitions | `10` |
 | Warm-ups per repetition | `1` |
 | Randomization seed | `20260822` |
-| Per-process timeout | `7200` seconds |
+| Per-plan process timeout | `600` seconds (10 minutes) |
 | Output | `robustness/results/<UTC timestamp>` |
 
 Command-line options remain available when a machine differs from the experiment
