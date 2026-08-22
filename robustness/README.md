@@ -26,8 +26,8 @@ generic upstream `rewrite[0-9]+.sql` files; the separate
 ## Run
 
 Build the original DuckDB binary and provide populated `lsqb_db` and `job_db`
-files. All experiment parameters have reproducible defaults, so on the Linux
-experiment server run:
+files. The runner supports Python 3.8 and newer. All experiment parameters have
+reproducible defaults, so on the Linux experiment server run:
 
 ```sh
 python3 robustness/run_experiment.py

@@ -130,7 +130,7 @@ def summarize(
             for key, row in validation.items()
             if row.get("plan_kind") == "rewrite"
         ),
-        key=lambda key: (key[0], key[1], int(key[2].removeprefix("rewrite"))),
+        key=lambda key: (key[0], key[1], int(key[2][len("rewrite") :])),
     )
 
     plan_rows: list[dict[str, object]] = []

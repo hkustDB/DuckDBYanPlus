@@ -292,9 +292,11 @@ def plan_command(
         append_sql(command, plan.final_query)
         return command
 
+    final_query = plan.final_query.rstrip()
+    if final_query.endswith(";"):
+        final_query = final_query[:-1]
     discard_query = (
-        "COPY (\n" + plan.final_query.rstrip().removesuffix(";") +
-        "\n) TO '/dev/null' (FORMAT CSV);"
+        "COPY (\n" + final_query + "\n) TO '/dev/null' (FORMAT CSV);"
     )
     append_sql(command, ".timer off")
     for _ in range(warmups):

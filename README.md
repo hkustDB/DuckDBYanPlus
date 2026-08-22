@@ -357,7 +357,7 @@ hashes, and DuckDB adaptations are recorded in
 
 After building `build/duckdb_origin/duckdb` and placing populated `lsqb_db` and
 `job_db` files at the repository root, run the complete experiment with its
-reproducible defaults:
+reproducible defaults using Python 3.8 or newer:
 
 ```sh
 python3 robustness/run_experiment.py

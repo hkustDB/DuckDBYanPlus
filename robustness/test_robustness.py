@@ -47,6 +47,26 @@ create or replace view v as select ';' AS value;
         output = "Run Time (s): real 0.123456 user 0.1 sys 0.0"
         self.assertEqual(run_experiment.TIMER_PATTERN.findall(output), ["0.123456"])
 
+    def test_timed_query_preparation_is_python_38_compatible(self) -> None:
+        plan = run_experiment.Plan(
+            suite="test",
+            query="q1",
+            name="rewrite1",
+            kind="rewrite",
+            source_file=pathlib.Path("rewrite1.sql"),
+            setup=(),
+            final_query="SELECT 1;",
+        )
+        command = run_experiment.plan_command(
+            plan,
+            pathlib.Path("duckdb"),
+            pathlib.Path("test.db"),
+            [],
+            threads=1,
+            warmups=1,
+        )
+        self.assertIn("COPY (\nSELECT 1\n) TO '/dev/null' (FORMAT CSV);", command)
+
 
 class SummaryTest(unittest.TestCase):
     def write_csv(
