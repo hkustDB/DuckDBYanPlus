@@ -4,4 +4,4 @@ create or replace TEMP view aggJoin8909182364670701114 as select src as v2, anno
 create or replace TEMP view bag188 as select g1.dst as v2, g2.dst as v4, g1.src as v6 from Graph as g1, Graph as g2, Graph as g3 where g1.dst=g2.src and g2.dst=g3.src and g3.dst=g1.src;
 create or replace TEMP view aggView6906784260504084903 as select v2, COUNT(*) as annot from bag188 group by v2;
 create or replace TEMP view aggJoin1657488435551201938 as select aggJoin8909182364670701114.annot * aggView6906784260504084903.annot as annot from aggJoin8909182364670701114 join aggView6906784260504084903 using(v2);
-select SUM(annot) as v15 from aggJoin1657488435551201938;
+select COALESCE(SUM(annot), 0) as v15 from aggJoin1657488435551201938;

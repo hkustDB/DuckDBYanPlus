@@ -329,6 +329,43 @@ def indent_predicates(predicates, prefix):
     return ("\n" + prefix + "AND ").join(f"({predicate})" for predicate in predicates)
 
 
+def qualified_column_refs(expression, alias_lookup):
+    """Return ordered, de-duplicated alias/column references from an expression."""
+    result = []
+    seen = set()
+    pattern = re.compile(rf"\b({IDENTIFIER})\s*\.\s*({IDENTIFIER})\b")
+    for match in pattern.finditer(expression):
+        alias = alias_lookup.get(match.group(1).lower())
+        if not alias:
+            continue
+        reference = (alias, match.group(2))
+        key = (alias.lower(), match.group(2).lower())
+        if key not in seen:
+            result.append(reference)
+            seen.add(key)
+    return result
+
+
+def rewrite_qualified_columns(expression, alias_lookup, source_for_alias):
+    """Rewrite a.col to <stage>.a__col for a round-3 annotated view."""
+
+    pattern = re.compile(rf"\b({IDENTIFIER})\s*\.\s*({IDENTIFIER})\b")
+
+    def replace(match):
+        alias = alias_lookup.get(match.group(1).lower())
+        if not alias or alias not in source_for_alias:
+            return match.group(0)
+        return (
+            source_for_alias[alias]
+            + "."
+            + safe_identifier(alias)
+            + "__"
+            + safe_identifier(match.group(2))
+        )
+
+    return pattern.sub(replace, expression)
+
+
 def generate_job_yannakakis(local_original, rewrite_name, upstream_rewrite):
     """Generate a bag-correct DuckDB Yannakakis-style reducer for JOB SUM(1)."""
     parsed = parse_job_sum_query(local_original)
@@ -421,19 +458,155 @@ def generate_job_yannakakis(local_original, rewrite_name, upstream_rewrite):
                 )
                 queue.append(child)
 
-    reduced_from = ",\n     ".join(
-        f"{down_views[alias]} AS {alias}" for _, alias in parsed["relations"]
-    )
+    # Round 3: aggregate and project after every tree join.  Keeping the full
+    # reduced join until the root defeats the purpose of the Yannakakis+
+    # rewrite on JOB: many queries have only two or three result columns but
+    # a very large cyclic join result.  The messages below retain only result
+    # columns and columns that cross the current subtree boundary.  Non-tree
+    # predicates are evaluated at the first stage containing both endpoints,
+    # so the rewrite remains exact for the cyclic JOB alias graphs.
+    alias_lookup = {alias.lower(): alias for alias in aliases}
+    group_expressions = split_top_level_commas(parsed["group"])
+    group_refs = []
+    for expression in group_expressions:
+        refs = qualified_column_refs(expression, alias_lookup)
+        if len(refs) != 1 or expression.strip().lower() != (
+            refs[0][0] + "." + refs[0][1]
+        ).lower():
+            raise RuntimeError(
+                f"JOB round-3 aggregation requires direct GROUP BY columns: "
+                f"{local_original}: {expression}"
+            )
+        if refs[0] not in group_refs:
+            group_refs.append(refs[0])
+
+    condition_entries = []
+    referenced_columns = {alias: [] for alias in aliases}
+    for edge, predicates in parsed["joins"].items():
+        for predicate in predicates:
+            refs = qualified_column_refs(predicate, alias_lookup)
+            if len({alias for alias, _ in refs}) != 2:
+                raise RuntimeError(
+                    f"unsupported JOB round-3 join predicate in {local_original}: {predicate}"
+                )
+            condition_entries.append((set(edge), predicate, refs))
+            for alias, column in refs:
+                if column not in referenced_columns[alias]:
+                    referenced_columns[alias].append(column)
+    for alias, column in group_refs:
+        if column not in referenced_columns[alias]:
+            referenced_columns[alias].append(column)
+
+    def column_name(alias, column):
+        return safe_identifier(alias) + "__" + safe_identifier(column)
+
+    def required_columns(scope):
+        required = []
+        for reference in group_refs:
+            if reference[0] in scope and reference not in required:
+                required.append(reference)
+        for _, _, refs in condition_entries:
+            referenced_aliases = {alias for alias, _ in refs}
+            if referenced_aliases & scope and referenced_aliases - scope:
+                for reference in refs:
+                    if reference[0] in scope and reference not in required:
+                        required.append(reference)
+        return required
+
+    round3_base = {}
+    for _, alias in parsed["relations"]:
+        view = f"{prefix}_r3_base_{safe_identifier(alias)}"
+        round3_base[alias] = view
+        columns = referenced_columns[alias]
+        select_columns = [
+            f"{alias}.{column} AS {column_name(alias, column)}" for column in columns
+        ]
+        select_columns.append("CAST(COUNT(*) AS HUGEINT) AS annot")
+        statement = (
+            f"CREATE OR REPLACE TEMP VIEW {view} AS\nSELECT "
+            + ",\n       ".join(select_columns)
+            + f"\nFROM {down_views[alias]} AS {alias}"
+        )
+        if columns:
+            statement += "\nGROUP BY " + ", ".join(
+                f"{alias}.{column}" for column in columns
+            )
+        statements.append(statement + ";")
+
+    round3_counter = 0
+
+    def build_round3(alias):
+        nonlocal round3_counter
+        current_view = round3_base[alias]
+        current_scope = {alias}
+        for child in children[alias]:
+            child_view, child_scope = build_round3(child)
+            crossing = [
+                predicate
+                for edge, predicate, _ in condition_entries
+                if edge & current_scope and edge & child_scope
+            ]
+            if not crossing:
+                raise RuntimeError(
+                    f"missing JOB round-3 predicate between subtrees in {local_original}"
+                )
+            combined_scope = current_scope | child_scope
+            output_refs = required_columns(combined_scope)
+            source_for_alias = {
+                member: ("round3_left" if member in current_scope else "round3_right")
+                for member in combined_scope
+            }
+            select_columns = [
+                source_for_alias[owner]
+                + "."
+                + column_name(owner, column)
+                + " AS "
+                + column_name(owner, column)
+                for owner, column in output_refs
+            ]
+            select_columns.append(
+                "SUM(round3_left.annot * round3_right.annot) AS annot"
+            )
+            join_predicates = [
+                rewrite_qualified_columns(
+                    predicate, alias_lookup, source_for_alias
+                )
+                for predicate in crossing
+            ]
+            round3_counter += 1
+            next_view = f"{prefix}_r3_join_{round3_counter}"
+            statement = (
+                f"CREATE OR REPLACE TEMP VIEW {next_view} AS\nSELECT "
+                + ",\n       ".join(select_columns)
+                + f"\nFROM {current_view} AS round3_left\n"
+                + f"JOIN {child_view} AS round3_right\n  ON "
+                + "\n AND ".join(f"({predicate})" for predicate in join_predicates)
+            )
+            if output_refs:
+                statement += "\nGROUP BY " + ", ".join(
+                    source_for_alias[owner] + "." + column_name(owner, column)
+                    for owner, column in output_refs
+                )
+            statements.append(statement + ";")
+            current_view = next_view
+            current_scope = combined_scope
+        return current_view, current_scope
+
+    final_view, final_scope = build_round3(roots[0])
+    if final_scope != set(aliases):
+        raise RuntimeError(f"incomplete JOB round-3 tree for {local_original}")
+    result_columns = [
+        "round3_result."
+        + column_name(alias, column)
+        + " AS "
+        + safe_identifier(column)
+        for alias, column in group_refs
+    ]
+    result_columns.append("round3_result.annot AS record_count")
     statements.append(
         "SELECT "
-        + parsed["select"]
-        + "\nFROM "
-        + reduced_from
-        + "\nWHERE "
-        + indent_predicates(split_top_level_and(parsed["where"]), "  ")
-        + "\nGROUP BY "
-        + parsed["group"]
-        + ";"
+        + ",\n       ".join(result_columns)
+        + f"\nFROM {final_view} AS round3_result;"
     )
     result = ("\n\n".join(statements) + "\n").encode("utf-8")
     if re.search(rb"\bMIN\s*\(", result, re.IGNORECASE):
@@ -578,18 +751,45 @@ def generate_graph_yannakakis(local_original, rewrite_name):
             )
             queue.append(child)
 
-    reduced_from = ",\n     ".join(
-        f"{down_views[alias]} AS {alias}" for _, alias in parsed["relations"]
-    )
-    statements.append(
-        "SELECT "
-        + parsed["select"]
-        + "\nFROM "
-        + reduced_from
-        + "\nWHERE "
-        + indent_predicates(split_top_level_and(parsed["where"]), "  ")
-        + ";"
-    )
+    # For an acyclic query whose DISTINCT output is owned by one relation, the
+    # two semijoin passes already prove that every surviving row participates
+    # in the full join.  Round 3 therefore only needs the minimal projection;
+    # reconstructing the complete join can reintroduce an enormous duplicate
+    # intermediate before DISTINCT (Graph Q7 is the motivating case).
+    output_references = {
+        reference.lower()
+        for reference in re.findall(rf"\b({IDENTIFIER})\s*\.", parsed["select"])
+    }
+    alias_lookup = {alias.lower(): alias for _, alias in parsed["relations"]}
+    if (
+        parsed["select"].lower().startswith("distinct ")
+        and len(parsed["joins"]) == len(parsed["relations"]) - 1
+        and len(output_references) == 1
+        and next(iter(output_references)) in alias_lookup
+    ):
+        output_alias = alias_lookup[next(iter(output_references))]
+        statements.append(
+            "SELECT "
+            + parsed["select"]
+            + "\nFROM "
+            + down_views[output_alias]
+            + " AS "
+            + output_alias
+            + ";"
+        )
+    else:
+        reduced_from = ",\n     ".join(
+            f"{down_views[alias]} AS {alias}" for _, alias in parsed["relations"]
+        )
+        statements.append(
+            "SELECT "
+            + parsed["select"]
+            + "\nFROM "
+            + reduced_from
+            + "\nWHERE "
+            + indent_predicates(split_top_level_and(parsed["where"]), "  ")
+            + ";"
+        )
     return ("\n\n".join(statements) + "\n").encode("utf-8")
 
 
@@ -702,6 +902,36 @@ GROUP BY Person.id, Person.firstName, Person.lastName;
 """
 
 
+def generate_lsqb_q5_minimal(local_original):
+    """Generate the exact minimal annotation plan for local LSQB Q5."""
+    if local_original.stem != "q5":
+        raise RuntimeError(f"unexpected LSQB Q5 source: {local_original}")
+    return b"""-- Exact minimal round-3 annotation plan for local LSQB Q5.
+-- The former imported artifact retained four logical semijoin views before
+-- performing these same joins. Because DuckDB inlines views, that duplicated
+-- scans and made the measured final statement substantially slower.
+CREATE OR REPLACE TEMP VIEW ya_q5_message_tags AS
+SELECT MessageId, TagId AS message_tag_id, count(*)::HUGEINT AS annot
+FROM Message_hasTag_Tag_T
+GROUP BY MessageId, TagId;
+
+CREATE OR REPLACE TEMP VIEW ya_q5_replies AS
+SELECT r.CommentId, m.message_tag_id, m.annot
+FROM Comment_replyOf_Message_T AS r
+JOIN ya_q5_message_tags AS m ON r.ParentMessageId = m.MessageId;
+
+CREATE OR REPLACE TEMP VIEW ya_q5_comment_tags AS
+SELECT CommentId, TagId AS comment_tag_id, count(*)::HUGEINT AS annot
+FROM Comment_hasTag_Tag
+GROUP BY CommentId, TagId;
+
+SELECT coalesce(sum(r.annot * c.annot), 0) AS v7
+FROM ya_q5_replies AS r
+JOIN ya_q5_comment_tags AS c ON r.CommentId = c.CommentId
+WHERE r.message_tag_id < c.comment_tag_id;
+"""
+
+
 def coalesce_final_count(content, source_label):
     """Make a Quorion SUM(annotation) count agree with COUNT(*) on empty input."""
     text = content.decode("utf-8")
@@ -804,6 +1034,18 @@ def adapt_tpch_rewrite(local_original, rewrite, content):
 def add_tpch_helper(local_original, content):
     """Make copied TPC-H q7/q18 rewrites independent of pre-created helpers."""
     if local_original.stem == "7":
+        text = content.decode("utf-8")
+        text, predicates = re.subn(
+            r"(?i)(create\s+or\s+replace\s+view\s+n1Aux\d+\s+as\s+select\s+"
+            r"n_nationkey\s+as\s+v4\s*,\s*n_name\s+as\s+v43\s+from\s+nation)\s*;",
+            r"\1 WHERE n_name = 'FRANCE';",
+            text,
+        )
+        if predicates != 1:
+            raise RuntimeError(
+                f"expected one missing TPC-H q7 FRANCE predicate in copied rewrite, got {predicates}"
+            )
+        content = text.encode("utf-8")
         helper = b"""-- DuckDB helper required by the local TPC-H q7 input.
 CREATE OR REPLACE TEMP VIEW lineitemwithyear AS
 SELECT lineitem.*, year(l_shipdate) AS l_year FROM lineitem;
@@ -923,6 +1165,9 @@ def expected_imports(source_root):
                     elif local_original.stem == "bi-9":
                         content = generate_lsqb_bi9(local_original)
                         status = "simulated_duckdb_yannakakis"
+                    elif local_original.stem == "q5":
+                        content = generate_lsqb_q5_minimal(local_original)
+                        status = "generated_minimal_annotation"
                     elif local_original.stem == "q2" and rewrite:
                         content = (
                             b"-- Simulated one-bag GHD fallback: the cyclic triangle is one bag,\n"

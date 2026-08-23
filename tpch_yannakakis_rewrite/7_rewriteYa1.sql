@@ -3,7 +3,7 @@ CREATE OR REPLACE TEMP VIEW lineitemwithyear AS
 SELECT lineitem.*, year(l_shipdate) AS l_year FROM lineitem;
 
 create or replace view lineitemwithyearAux62 as select l_orderkey as v25, l_year as v9, l_suppkey as v1 from lineitemwithyear where l_shipdate>=DATE '1995-01-01' and l_shipdate<=DATE '1996-12-31';
-create or replace view n1Aux96 as select n_nationkey as v4, n_name as v43 from nation;
+create or replace view n1Aux96 as select n_nationkey as v4, n_name as v43 from nation WHERE n_name = 'FRANCE';
 create or replace view n2Aux60 as select n_nationkey as v37, n_name as v47 from nation where n_name= 'GERMANY';
 create or replace view semiUp5172336988871642036 as select s_suppkey as v1, s_nationkey as v4 from supplier AS supplier where (s_nationkey) in (select v4 from n1Aux96);
 create or replace view semiUp6291589031857458654 as select v25, v9, v1 from lineitemwithyearAux62 where (v1) in (select v1 from semiUp5172336988871642036);

@@ -1,0 +1,53 @@
+suite,query,plan,plan_kind,source_file,status,matches_original,result_sha256,error
+job,15d,query,original,job-15d/query.sql,ok,true,adff316641aaf6eabb585c57d0cede53b5761d4973549a74a79bb33f092ac688,
+job,15d,rewrite1,rewrite,job-15d/rewrite1.sql,ok,true,adff316641aaf6eabb585c57d0cede53b5761d4973549a74a79bb33f092ac688,
+job,15d,rewrite2,rewrite,job-15d/rewrite2.sql,ok,true,adff316641aaf6eabb585c57d0cede53b5761d4973549a74a79bb33f092ac688,
+job,15d,rewrite3,rewrite,job-15d/rewrite3.sql,ok,true,adff316641aaf6eabb585c57d0cede53b5761d4973549a74a79bb33f092ac688,
+job,15d,rewrite4,rewrite,job-15d/rewrite4.sql,ok,true,adff316641aaf6eabb585c57d0cede53b5761d4973549a74a79bb33f092ac688,
+job,15d,rewrite5,rewrite,job-15d/rewrite5.sql,ok,true,adff316641aaf6eabb585c57d0cede53b5761d4973549a74a79bb33f092ac688,
+job,15d,rewrite6,rewrite,job-15d/rewrite6.sql,ok,true,adff316641aaf6eabb585c57d0cede53b5761d4973549a74a79bb33f092ac688,
+job,15d,rewrite7,rewrite,job-15d/rewrite7.sql,ok,true,adff316641aaf6eabb585c57d0cede53b5761d4973549a74a79bb33f092ac688,
+job,15d,rewrite8,rewrite,job-15d/rewrite8.sql,ok,true,adff316641aaf6eabb585c57d0cede53b5761d4973549a74a79bb33f092ac688,
+job,17a,query,original,job-17a/query.sql,ok,true,b1e9a667f63415b5e78c605e55d74d2fa6a98569a527f48a1fe90fc2efa6ad68,
+job,17a,rewrite1,rewrite,job-17a/rewrite1.sql,ok,true,b1e9a667f63415b5e78c605e55d74d2fa6a98569a527f48a1fe90fc2efa6ad68,
+job,17a,rewrite2,rewrite,job-17a/rewrite2.sql,ok,true,b1e9a667f63415b5e78c605e55d74d2fa6a98569a527f48a1fe90fc2efa6ad68,
+job,17a,rewrite3,rewrite,job-17a/rewrite3.sql,ok,true,b1e9a667f63415b5e78c605e55d74d2fa6a98569a527f48a1fe90fc2efa6ad68,
+job,17a,rewrite4,rewrite,job-17a/rewrite4.sql,ok,true,b1e9a667f63415b5e78c605e55d74d2fa6a98569a527f48a1fe90fc2efa6ad68,
+job,17a,rewrite5,rewrite,job-17a/rewrite5.sql,ok,true,b1e9a667f63415b5e78c605e55d74d2fa6a98569a527f48a1fe90fc2efa6ad68,
+job,17a,rewrite6,rewrite,job-17a/rewrite6.sql,ok,true,b1e9a667f63415b5e78c605e55d74d2fa6a98569a527f48a1fe90fc2efa6ad68,
+job,17a,rewrite7,rewrite,job-17a/rewrite7.sql,ok,true,b1e9a667f63415b5e78c605e55d74d2fa6a98569a527f48a1fe90fc2efa6ad68,
+job,17a,rewrite8,rewrite,job-17a/rewrite8.sql,ok,true,b1e9a667f63415b5e78c605e55d74d2fa6a98569a527f48a1fe90fc2efa6ad68,
+job,22d,query,original,job-22d/query.sql,ok,true,3d407b77c3a4e8a159d05d9732bb4eb85140198a967a59c9c9f615b1840818a8,
+job,22d,rewrite1,rewrite,job-22d/rewrite1.sql,ok,true,3d407b77c3a4e8a159d05d9732bb4eb85140198a967a59c9c9f615b1840818a8,
+job,22d,rewrite2,rewrite,job-22d/rewrite2.sql,ok,true,3d407b77c3a4e8a159d05d9732bb4eb85140198a967a59c9c9f615b1840818a8,
+job,22d,rewrite3,rewrite,job-22d/rewrite3.sql,ok,true,3d407b77c3a4e8a159d05d9732bb4eb85140198a967a59c9c9f615b1840818a8,
+job,22d,rewrite4,rewrite,job-22d/rewrite4.sql,ok,true,3d407b77c3a4e8a159d05d9732bb4eb85140198a967a59c9c9f615b1840818a8,
+job,22d,rewrite5,rewrite,job-22d/rewrite5.sql,ok,true,3d407b77c3a4e8a159d05d9732bb4eb85140198a967a59c9c9f615b1840818a8,
+job,22d,rewrite6,rewrite,job-22d/rewrite6.sql,ok,true,3d407b77c3a4e8a159d05d9732bb4eb85140198a967a59c9c9f615b1840818a8,
+job,22d,rewrite7,rewrite,job-22d/rewrite7.sql,ok,true,3d407b77c3a4e8a159d05d9732bb4eb85140198a967a59c9c9f615b1840818a8,
+job,22d,rewrite8,rewrite,job-22d/rewrite8.sql,ok,true,3d407b77c3a4e8a159d05d9732bb4eb85140198a967a59c9c9f615b1840818a8,
+job,2d,query,original,job-2d/query.sql,ok,true,375b75768c4e58513ddc41bcd50af5c662079017a998e5f718cba0d679c1a9ef,
+job,2d,rewrite1,rewrite,job-2d/rewrite1.sql,ok,true,375b75768c4e58513ddc41bcd50af5c662079017a998e5f718cba0d679c1a9ef,
+job,2d,rewrite2,rewrite,job-2d/rewrite2.sql,ok,true,375b75768c4e58513ddc41bcd50af5c662079017a998e5f718cba0d679c1a9ef,
+job,2d,rewrite3,rewrite,job-2d/rewrite3.sql,ok,true,375b75768c4e58513ddc41bcd50af5c662079017a998e5f718cba0d679c1a9ef,
+job,2d,rewrite4,rewrite,job-2d/rewrite4.sql,ok,true,375b75768c4e58513ddc41bcd50af5c662079017a998e5f718cba0d679c1a9ef,
+job,2d,rewrite5,rewrite,job-2d/rewrite5.sql,ok,true,375b75768c4e58513ddc41bcd50af5c662079017a998e5f718cba0d679c1a9ef,
+job,2d,rewrite6,rewrite,job-2d/rewrite6.sql,ok,true,375b75768c4e58513ddc41bcd50af5c662079017a998e5f718cba0d679c1a9ef,
+lsqb,q1,query,original,lsqb-q1/query.sql,ok,true,2deb2626a90edef93d4f91539441fced32e2b9079b20939e91cfc9df46cc345a,
+lsqb,q1,rewrite1,rewrite,lsqb-q1/rewrite1.sql,mismatch,false,5d803f402725022203001c460341bbdcafde12e932a16abf003f02dc10c891c2,result differs from query.sql
+lsqb,q1,rewrite2,rewrite,lsqb-q1/rewrite2.sql,ok,true,2deb2626a90edef93d4f91539441fced32e2b9079b20939e91cfc9df46cc345a,
+lsqb,q1,rewrite3,rewrite,lsqb-q1/rewrite3.sql,ok,true,2deb2626a90edef93d4f91539441fced32e2b9079b20939e91cfc9df46cc345a,
+lsqb,q1,rewrite4,rewrite,lsqb-q1/rewrite4.sql,ok,true,2deb2626a90edef93d4f91539441fced32e2b9079b20939e91cfc9df46cc345a,
+lsqb,q1,rewrite5,rewrite,lsqb-q1/rewrite5.sql,ok,true,2deb2626a90edef93d4f91539441fced32e2b9079b20939e91cfc9df46cc345a,
+lsqb,q1,rewrite6,rewrite,lsqb-q1/rewrite6.sql,ok,true,2deb2626a90edef93d4f91539441fced32e2b9079b20939e91cfc9df46cc345a,
+lsqb,q1,rewrite7,rewrite,lsqb-q1/rewrite7.sql,ok,true,2deb2626a90edef93d4f91539441fced32e2b9079b20939e91cfc9df46cc345a,
+lsqb,q1,rewrite8,rewrite,lsqb-q1/rewrite8.sql,ok,true,2deb2626a90edef93d4f91539441fced32e2b9079b20939e91cfc9df46cc345a,
+lsqb,q9,query,original,lsqb-q9/query.sql,timeout,false,,timed out after 600 seconds
+lsqb,q9,rewrite1,rewrite,lsqb-q9/rewrite1.sql,error,false,c3d197300d4eb86138dccdf60fd71ab7daeda21d951825c08e47e7b9a2fba785,original query validation failed
+lsqb,q9,rewrite2,rewrite,lsqb-q9/rewrite2.sql,error,false,c3d197300d4eb86138dccdf60fd71ab7daeda21d951825c08e47e7b9a2fba785,original query validation failed
+lsqb,q9,rewrite3,rewrite,lsqb-q9/rewrite3.sql,error,false,c3d197300d4eb86138dccdf60fd71ab7daeda21d951825c08e47e7b9a2fba785,original query validation failed
+lsqb,q9,rewrite4,rewrite,lsqb-q9/rewrite4.sql,error,false,c3d197300d4eb86138dccdf60fd71ab7daeda21d951825c08e47e7b9a2fba785,original query validation failed
+lsqb,q9,rewrite5,rewrite,lsqb-q9/rewrite5.sql,error,false,c3d197300d4eb86138dccdf60fd71ab7daeda21d951825c08e47e7b9a2fba785,original query validation failed
+lsqb,q9,rewrite6,rewrite,lsqb-q9/rewrite6.sql,error,false,c3d197300d4eb86138dccdf60fd71ab7daeda21d951825c08e47e7b9a2fba785,original query validation failed
+lsqb,q9,rewrite7,rewrite,lsqb-q9/rewrite7.sql,error,false,c3d197300d4eb86138dccdf60fd71ab7daeda21d951825c08e47e7b9a2fba785,original query validation failed
+lsqb,q9,rewrite8,rewrite,lsqb-q9/rewrite8.sql,error,false,c3d197300d4eb86138dccdf60fd71ab7daeda21d951825c08e47e7b9a2fba785,original query validation failed

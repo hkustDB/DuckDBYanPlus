@@ -11,12 +11,12 @@
 
 namespace duckdb {
 
-JoinOrderOptimizer::JoinOrderOptimizer(ClientContext &context, bool GYO)
-    : context(context), query_graph_manager(context), GYO(GYO), depth(1) {
+JoinOrderOptimizer::JoinOrderOptimizer(ClientContext &context, bool GYO, bool enable_cyclic_bags)
+    : context(context), query_graph_manager(context), GYO(GYO), enable_cyclic_bags(enable_cyclic_bags), depth(1) {
 }
 
 JoinOrderOptimizer JoinOrderOptimizer::CreateChildOptimizer() {
-	JoinOrderOptimizer child_optimizer(context, GYO);
+	JoinOrderOptimizer child_optimizer(context, GYO, enable_cyclic_bags);
 	child_optimizer.materialized_cte_stats = materialized_cte_stats;
 	child_optimizer.delim_scan_stats = delim_scan_stats;
 	child_optimizer.depth = depth + 1;
@@ -150,7 +150,7 @@ JoinOrderOptimizer::CallSolveJoinOrderFixed(unique_ptr<LogicalOperator> plan,
 			    PlanEnumerator(query_graph_manager, native_cost_model, query_graph_manager.GetQueryGraphEdges());
 			native_enumerator.InitLeafPlans();
 			native_enumerator.SolveJoinOrder();
-			if (gyo_result.IsCyclic() && Settings::Get<YanplusCyclicBagsSetting>(context)) {
+			if (gyo_result.IsCyclic() && enable_cyclic_bags && Settings::Get<YanplusCyclicBagsSetting>(context)) {
 				VirtualBagBoundary boundary;
 				if (native_enumerator.FindPlanDerivedGHDBoundary(gyo_result.cyclic_core, boundary)) {
 					query_graph_manager.SetVirtualBagBoundary(std::move(boundary));

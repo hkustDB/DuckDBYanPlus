@@ -71,12 +71,4 @@ FROM ya_q7_rewriteYa0_up_g3 AS g3
 WHERE EXISTS (SELECT 1 FROM ya_q7_rewriteYa0_down_g2 AS g2 WHERE (g2.dst = g3.src));
 
 SELECT distinct g2.src, g2.dst
-FROM ya_q7_rewriteYa0_down_g1 AS g1,
-     ya_q7_rewriteYa0_down_g2 AS g2,
-     ya_q7_rewriteYa0_down_g3 AS g3,
-     ya_q7_rewriteYa0_down_g4 AS g4,
-     ya_q7_rewriteYa0_down_g5 AS g5
-WHERE (g1.dst = g2.src)
-  AND (g2.dst = g3.src)
-  AND (g4.dst = g2.src)
-  AND (g2.dst = g5.src);
+FROM ya_q7_rewriteYa0_down_g2 AS g2;

@@ -1,0 +1,7 @@
+suite,query,rewrite_count,measured_count,wins_by_mean,wins_by_median,all_faster_by_mean,all_faster_by_median,mean_of_median_speedups,median_of_median_speedups,geomean_of_median_speedups,min_median_speedup,max_median_speedup
+job,15d,8,8,7,7,false,false,1.654974,1.767214,1.543065,0.696970,2.533154
+job,17a,8,8,8,8,true,true,1.563222,1.685817,1.531743,1.121632,1.892142
+job,22d,8,8,6,6,false,false,1.567230,1.562718,1.441108,0.637998,2.318909
+job,2d,6,6,2,2,false,false,0.627572,0.634269,0.496724,0.183995,1.106157
+lsqb,q1,8,7,7,7,false,false,3.837417,4.263345,3.769569,2.958938,4.557299
+lsqb,q9,8,0,0,0,false,false,,,,,

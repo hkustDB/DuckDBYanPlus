@@ -74,21 +74,80 @@ SELECT k.*
 FROM ya_4b_rewriteYa5_up_k AS k
 WHERE EXISTS (SELECT 1 FROM ya_4b_rewriteYa5_down_mk AS mk WHERE (k.id = mk.keyword_id));
 
-SELECT mi_idx.info,
-       t.title,
-       SUM(1) AS record_count
-FROM ya_4b_rewriteYa5_down_it AS it,
-     ya_4b_rewriteYa5_down_k AS k,
-     ya_4b_rewriteYa5_down_mi_idx AS mi_idx,
-     ya_4b_rewriteYa5_down_mk AS mk,
-     ya_4b_rewriteYa5_down_t AS t
-WHERE (it.info ='rating')
-  AND (k.keyword LIKE '%sequel%')
-  AND (mi_idx.info > '9.0')
-  AND (t.production_year > 2010)
-  AND (t.id = mi_idx.movie_id)
-  AND (t.id = mk.movie_id)
-  AND (mk.movie_id = mi_idx.movie_id)
-  AND (k.id = mk.keyword_id)
-  AND (it.id = mi_idx.info_type_id)
-GROUP BY mi_idx.info, t.title;
+CREATE OR REPLACE TEMP VIEW ya_4b_rewriteYa5_r3_base_it AS
+SELECT it.id AS it__id,
+       CAST(COUNT(*) AS HUGEINT) AS annot
+FROM ya_4b_rewriteYa5_down_it AS it
+GROUP BY it.id;
+
+CREATE OR REPLACE TEMP VIEW ya_4b_rewriteYa5_r3_base_k AS
+SELECT k.id AS k__id,
+       CAST(COUNT(*) AS HUGEINT) AS annot
+FROM ya_4b_rewriteYa5_down_k AS k
+GROUP BY k.id;
+
+CREATE OR REPLACE TEMP VIEW ya_4b_rewriteYa5_r3_base_mi_idx AS
+SELECT mi_idx.movie_id AS mi_idx__movie_id,
+       mi_idx.info_type_id AS mi_idx__info_type_id,
+       mi_idx.info AS mi_idx__info,
+       CAST(COUNT(*) AS HUGEINT) AS annot
+FROM ya_4b_rewriteYa5_down_mi_idx AS mi_idx
+GROUP BY mi_idx.movie_id, mi_idx.info_type_id, mi_idx.info;
+
+CREATE OR REPLACE TEMP VIEW ya_4b_rewriteYa5_r3_base_mk AS
+SELECT mk.movie_id AS mk__movie_id,
+       mk.keyword_id AS mk__keyword_id,
+       CAST(COUNT(*) AS HUGEINT) AS annot
+FROM ya_4b_rewriteYa5_down_mk AS mk
+GROUP BY mk.movie_id, mk.keyword_id;
+
+CREATE OR REPLACE TEMP VIEW ya_4b_rewriteYa5_r3_base_t AS
+SELECT t.id AS t__id,
+       t.title AS t__title,
+       CAST(COUNT(*) AS HUGEINT) AS annot
+FROM ya_4b_rewriteYa5_down_t AS t
+GROUP BY t.id, t.title;
+
+CREATE OR REPLACE TEMP VIEW ya_4b_rewriteYa5_r3_join_1 AS
+SELECT round3_left.mk__movie_id AS mk__movie_id,
+       SUM(round3_left.annot * round3_right.annot) AS annot
+FROM ya_4b_rewriteYa5_r3_base_mk AS round3_left
+JOIN ya_4b_rewriteYa5_r3_base_k AS round3_right
+  ON (round3_right.k__id = round3_left.mk__keyword_id)
+GROUP BY round3_left.mk__movie_id;
+
+CREATE OR REPLACE TEMP VIEW ya_4b_rewriteYa5_r3_join_2 AS
+SELECT round3_left.mi_idx__info AS mi_idx__info,
+       round3_left.mi_idx__movie_id AS mi_idx__movie_id,
+       round3_right.mk__movie_id AS mk__movie_id,
+       round3_left.mi_idx__info_type_id AS mi_idx__info_type_id,
+       SUM(round3_left.annot * round3_right.annot) AS annot
+FROM ya_4b_rewriteYa5_r3_base_mi_idx AS round3_left
+JOIN ya_4b_rewriteYa5_r3_join_1 AS round3_right
+  ON (round3_right.mk__movie_id = round3_left.mi_idx__movie_id)
+GROUP BY round3_left.mi_idx__info, round3_left.mi_idx__movie_id, round3_right.mk__movie_id, round3_left.mi_idx__info_type_id;
+
+CREATE OR REPLACE TEMP VIEW ya_4b_rewriteYa5_r3_join_3 AS
+SELECT round3_left.mi_idx__info AS mi_idx__info,
+       round3_right.t__title AS t__title,
+       round3_left.mi_idx__info_type_id AS mi_idx__info_type_id,
+       SUM(round3_left.annot * round3_right.annot) AS annot
+FROM ya_4b_rewriteYa5_r3_join_2 AS round3_left
+JOIN ya_4b_rewriteYa5_r3_base_t AS round3_right
+  ON (round3_right.t__id = round3_left.mi_idx__movie_id)
+ AND (round3_right.t__id = round3_left.mk__movie_id)
+GROUP BY round3_left.mi_idx__info, round3_right.t__title, round3_left.mi_idx__info_type_id;
+
+CREATE OR REPLACE TEMP VIEW ya_4b_rewriteYa5_r3_join_4 AS
+SELECT round3_right.mi_idx__info AS mi_idx__info,
+       round3_right.t__title AS t__title,
+       SUM(round3_left.annot * round3_right.annot) AS annot
+FROM ya_4b_rewriteYa5_r3_base_it AS round3_left
+JOIN ya_4b_rewriteYa5_r3_join_3 AS round3_right
+  ON (round3_left.it__id = round3_right.mi_idx__info_type_id)
+GROUP BY round3_right.mi_idx__info, round3_right.t__title;
+
+SELECT round3_result.mi_idx__info AS info,
+       round3_result.t__title AS title,
+       round3_result.annot AS record_count
+FROM ya_4b_rewriteYa5_r3_join_4 AS round3_result;

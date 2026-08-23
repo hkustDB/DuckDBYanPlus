@@ -79,8 +79,9 @@ GROUP BY id
 1	4
 2	2
 
-# Cyclic plans place CREATE_BF/USE_BF between the aggregate rewrite and the
-# original joins. Both wrappers are transparent for column-name resolution.
+# Cyclic SUM and three-relation COUNT plans keep CREATE_BF/USE_BF. Larger
+# cyclic COUNT plans use exact annotation aggregation when a small separator
+# permits a useful partial aggregate.
 statement ok
 CREATE TABLE yan_cycle_a(x INTEGER, y INTEGER)
 
@@ -109,6 +110,40 @@ JOIN yan_cycle_b b ON a.y = b.y
 JOIN yan_cycle_c c ON b.z = c.z AND a.x = c.x
 ----
 4
+
+query I
+SELECT count(*)
+FROM yan_cycle_a a
+JOIN yan_cycle_b b ON a.y = b.y
+JOIN yan_cycle_c c ON b.z = c.z AND a.x = c.x
+----
+3
+
+statement ok
+CREATE TABLE yan_q4_edge(src BIGINT, dst BIGINT)
+
+statement ok
+INSERT INTO yan_q4_edge VALUES (1, 2), (2, 3), (3, 1), (1, 4), (4, 2)
+
+query I
+SELECT count(*)
+FROM yan_q4_edge g1, yan_q4_edge g2, yan_q4_edge g3,
+     yan_q4_edge g4, yan_q4_edge g5, yan_q4_edge g6, yan_q4_edge g7
+WHERE g1.dst = g2.src AND g2.dst = g3.src AND g3.dst = g1.src
+  AND g4.dst = g5.src AND g5.dst = g6.src AND g6.dst = g4.src
+  AND g1.dst = g7.src AND g7.dst = g4.src
+----
+3
+
+query II
+EXPLAIN SELECT count(*)
+FROM yan_q4_edge g1, yan_q4_edge g2, yan_q4_edge g3,
+     yan_q4_edge g4, yan_q4_edge g5, yan_q4_edge g6, yan_q4_edge g7
+WHERE g1.dst = g2.src AND g2.dst = g3.src AND g3.dst = g1.src
+  AND g4.dst = g5.src AND g5.dst = g6.src AND g6.dst = g4.src
+  AND g1.dst = g7.src AND g7.dst = g4.src
+----
+physical_plan	<REGEX>:.*UNGROUPED_AGGREGATE.*(HASH_GROUP_BY|PERFECT_HASH_GROUP_BY).*
 
 query II
 EXPLAIN SELECT sum(a.x)

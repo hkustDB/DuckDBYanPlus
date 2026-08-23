@@ -1,0 +1,6 @@
+status=timeout
+error=timed out after 600 seconds
+
+[stdout]
+
+[stderr]

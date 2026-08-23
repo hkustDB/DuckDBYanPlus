@@ -1,8 +1,11 @@
+CREATE OR REPLACE TEMP VIEW lineitemwithyear AS
+SELECT lineitem.*, year(l_shipdate) AS l_year FROM lineitem;
+
 create or replace TEMP view aggView106555344001081693 as select n_nationkey as v37, n_name as v47 from nation as n2;
-create or replace TEMP view aggJoin4095866967928832749 as select v37, v47 from aggView106555344001081693 where v47= 'GERMANY');
+create or replace TEMP view aggJoin4095866967928832749 as select v37, v47 from aggView106555344001081693 where v47= 'GERMANY';
 create or replace TEMP view aggView109729022523567099 as select l_year as v9, l_orderkey as v25, l_suppkey as v1, SUM(l_extendedprice * (1 - l_discount)) as v51, COUNT(*) as annot from lineitemwithyear as lineitemwithyear where (l_shipdate >= DATE '1995-01-01') and (l_shipdate <= DATE '1996-12-31') group by l_year,l_orderkey,l_suppkey;
 create or replace TEMP view aggView3522138881096355775 as select n_nationkey as v4, n_name as v43 from nation as n1;
-create or replace TEMP view aggJoin2387868904232496709 as select v4, v43 from aggView3522138881096355775 where v43= 'FRANCE');
+create or replace TEMP view aggJoin2387868904232496709 as select v4, v43 from aggView3522138881096355775 where v43= 'FRANCE';
 create or replace TEMP view semiJoinView7687679912488899075 as select c_custkey as v34, c_nationkey as v37 from customer AS customer where (c_nationkey) in (select (v37) from aggJoin4095866967928832749);
 create or replace TEMP view semiJoinView2310390681844658028 as select o_orderkey as v25, o_custkey as v34 from orders AS orders where (o_custkey) in (select (v34) from semiJoinView7687679912488899075);
 create or replace TEMP view semiJoinView1435809953598050335 as select v9, v25, v1, v51, annot from aggView109729022523567099 where (v25) in (select (v25) from semiJoinView2310390681844658028);

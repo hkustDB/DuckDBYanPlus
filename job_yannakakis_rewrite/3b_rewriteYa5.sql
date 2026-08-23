@@ -59,17 +59,58 @@ SELECT k.*
 FROM ya_3b_rewriteYa5_up_k AS k
 WHERE EXISTS (SELECT 1 FROM ya_3b_rewriteYa5_down_mk AS mk WHERE (k.id = mk.keyword_id));
 
-SELECT t.title,
-       SUM(1) AS record_count
-FROM ya_3b_rewriteYa5_down_k AS k,
-     ya_3b_rewriteYa5_down_mi AS mi,
-     ya_3b_rewriteYa5_down_mk AS mk,
-     ya_3b_rewriteYa5_down_t AS t
-WHERE (k.keyword LIKE '%sequel%')
-  AND (mi.info IN ('Bulgaria'))
-  AND (t.production_year > 2010)
-  AND (t.id = mi.movie_id)
-  AND (t.id = mk.movie_id)
-  AND (mk.movie_id = mi.movie_id)
-  AND (k.id = mk.keyword_id)
-GROUP BY t.title;
+CREATE OR REPLACE TEMP VIEW ya_3b_rewriteYa5_r3_base_k AS
+SELECT k.id AS k__id,
+       CAST(COUNT(*) AS HUGEINT) AS annot
+FROM ya_3b_rewriteYa5_down_k AS k
+GROUP BY k.id;
+
+CREATE OR REPLACE TEMP VIEW ya_3b_rewriteYa5_r3_base_mi AS
+SELECT mi.movie_id AS mi__movie_id,
+       CAST(COUNT(*) AS HUGEINT) AS annot
+FROM ya_3b_rewriteYa5_down_mi AS mi
+GROUP BY mi.movie_id;
+
+CREATE OR REPLACE TEMP VIEW ya_3b_rewriteYa5_r3_base_mk AS
+SELECT mk.movie_id AS mk__movie_id,
+       mk.keyword_id AS mk__keyword_id,
+       CAST(COUNT(*) AS HUGEINT) AS annot
+FROM ya_3b_rewriteYa5_down_mk AS mk
+GROUP BY mk.movie_id, mk.keyword_id;
+
+CREATE OR REPLACE TEMP VIEW ya_3b_rewriteYa5_r3_base_t AS
+SELECT t.id AS t__id,
+       t.title AS t__title,
+       CAST(COUNT(*) AS HUGEINT) AS annot
+FROM ya_3b_rewriteYa5_down_t AS t
+GROUP BY t.id, t.title;
+
+CREATE OR REPLACE TEMP VIEW ya_3b_rewriteYa5_r3_join_1 AS
+SELECT round3_left.mk__movie_id AS mk__movie_id,
+       SUM(round3_left.annot * round3_right.annot) AS annot
+FROM ya_3b_rewriteYa5_r3_base_mk AS round3_left
+JOIN ya_3b_rewriteYa5_r3_base_k AS round3_right
+  ON (round3_right.k__id = round3_left.mk__keyword_id)
+GROUP BY round3_left.mk__movie_id;
+
+CREATE OR REPLACE TEMP VIEW ya_3b_rewriteYa5_r3_join_2 AS
+SELECT round3_left.mi__movie_id AS mi__movie_id,
+       round3_right.mk__movie_id AS mk__movie_id,
+       SUM(round3_left.annot * round3_right.annot) AS annot
+FROM ya_3b_rewriteYa5_r3_base_mi AS round3_left
+JOIN ya_3b_rewriteYa5_r3_join_1 AS round3_right
+  ON (round3_right.mk__movie_id = round3_left.mi__movie_id)
+GROUP BY round3_left.mi__movie_id, round3_right.mk__movie_id;
+
+CREATE OR REPLACE TEMP VIEW ya_3b_rewriteYa5_r3_join_3 AS
+SELECT round3_right.t__title AS t__title,
+       SUM(round3_left.annot * round3_right.annot) AS annot
+FROM ya_3b_rewriteYa5_r3_join_2 AS round3_left
+JOIN ya_3b_rewriteYa5_r3_base_t AS round3_right
+  ON (round3_right.t__id = round3_left.mi__movie_id)
+ AND (round3_right.t__id = round3_left.mk__movie_id)
+GROUP BY round3_right.t__title;
+
+SELECT round3_result.t__title AS title,
+       round3_result.annot AS record_count
+FROM ya_3b_rewriteYa5_r3_join_3 AS round3_result;

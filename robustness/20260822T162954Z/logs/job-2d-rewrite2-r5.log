@@ -1,0 +1,7 @@
+status=ok
+parsed_seconds=1.778000000
+
+[stdout]
+Run Time (s): real 1.778 user 66.577663 sys 10.261797
+
+[stderr]

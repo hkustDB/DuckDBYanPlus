@@ -1,0 +1,21 @@
+{
+  "cpu_list": "0-31,36-67",
+  "databases": {
+    "job": "/home/data/bchenba/dynamic-predicate-transfer/job_db",
+    "lsqb": "/home/data/bchenba/dynamic-predicate-transfer/lsqb_db"
+  },
+  "duckdb": "/home/data/bchenba/DuckDBYanPlus/build/duckdb_origin/duckdb",
+  "duckdb_version": "v1.5.0-yanplus",
+  "execution_design": "one fresh DuckDB process per plan per repetition; globally shuffled blocks",
+  "logical_cpu_count": 72,
+  "manifest_sha256": "dcd86fc80158b788569b19067709c27d3f117a7c0db7cb0a71fcbe93a1942c39",
+  "plan_count_including_originals": 52,
+  "platform": "Linux-5.4.0-216-generic-x86_64-with-glibc2.29",
+  "random_seed": 20260822,
+  "repetitions": 10,
+  "started_at_utc": "2026-08-22T16:29:54.424407+00:00",
+  "threads": 64,
+  "timeout_seconds": 600,
+  "timing_scope": "final SELECT; setup creates logical temporary views and is untimed",
+  "warmups_per_repetition": 1
+}

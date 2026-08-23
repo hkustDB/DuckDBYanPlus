@@ -25,7 +25,7 @@ namespace duckdb {
 
 class JoinOrderOptimizer {
 public:
-	explicit JoinOrderOptimizer(ClientContext &context, bool GYO = false);
+	explicit JoinOrderOptimizer(ClientContext &context, bool GYO = false, bool enable_cyclic_bags = true);
 	JoinOrderOptimizer CreateChildOptimizer();
 
 public:
@@ -69,6 +69,7 @@ private:
 	unordered_set<std::string> join_nodes_in_full_plan;
 
 	bool GYO;
+	bool enable_cyclic_bags;
 	bool detected_cyclic_query = false;
 	bool inserted_plan_derived_ghd_bag = false;
 

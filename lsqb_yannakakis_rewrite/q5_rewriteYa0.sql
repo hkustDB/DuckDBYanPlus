@@ -1,9 +1,23 @@
-create or replace view semiUp4411853643166124384 as select CommentId as v3, ParentMessageId as v1 from Comment_replyOf_Message_T AS Comment_replyOf_Message_T where (CommentId) in (select (CommentId) from Comment_hasTag_Tag AS cht);
-create or replace view semiUp3261761066071226774 as select MessageId as v1, TagId as M_TagId from Message_hasTag_Tag_T AS Message_hasTag_Tag_T where (MessageId) in (select (v1) from semiUp4411853643166124384);
-create or replace view semiDown4589646339162717735 as select v3, v1 from semiUp4411853643166124384 where (v1) in (select (v1) from semiUp3261761066071226774);
-create or replace view semiDown1750318047339924193 as select CommentId as v3, TagId as cht_TagId from Comment_hasTag_Tag AS cht where (CommentId) in (select (v3) from semiDown4589646339162717735);
-create or replace view aggView6232339003562034977 as select v3, cht_TagId, COUNT(*) as annot from semiDown1750318047339924193 group by v3, cht_TagId;
-create or replace view aggJoin8113337931834088208 as select v1, annot, cht_TagId from semiDown4589646339162717735 join aggView6232339003562034977 using(v3);
-create or replace view aggView6323258738161555075 as select v1, cht_TagId, SUM(annot) as annot from aggJoin8113337931834088208 group by v1, cht_TagId;
-create or replace view aggJoin5062140384914213065 as select annot from semiUp3261761066071226774 join aggView6323258738161555075 using(v1) where M_TagId < cht_TagId;
-select COALESCE(SUM(annot), 0) as v7 from aggJoin5062140384914213065;
+-- Exact minimal round-3 annotation plan for local LSQB Q5.
+-- The former imported artifact retained four logical semijoin views before
+-- performing these same joins. Because DuckDB inlines views, that duplicated
+-- scans and made the measured final statement substantially slower.
+CREATE OR REPLACE TEMP VIEW ya_q5_message_tags AS
+SELECT MessageId, TagId AS message_tag_id, count(*)::HUGEINT AS annot
+FROM Message_hasTag_Tag_T
+GROUP BY MessageId, TagId;
+
+CREATE OR REPLACE TEMP VIEW ya_q5_replies AS
+SELECT r.CommentId, m.message_tag_id, m.annot
+FROM Comment_replyOf_Message_T AS r
+JOIN ya_q5_message_tags AS m ON r.ParentMessageId = m.MessageId;
+
+CREATE OR REPLACE TEMP VIEW ya_q5_comment_tags AS
+SELECT CommentId, TagId AS comment_tag_id, count(*)::HUGEINT AS annot
+FROM Comment_hasTag_Tag
+GROUP BY CommentId, TagId;
+
+SELECT coalesce(sum(r.annot * c.annot), 0) AS v7
+FROM ya_q5_replies AS r
+JOIN ya_q5_comment_tags AS c ON r.CommentId = c.CommentId
+WHERE r.message_tag_id < c.comment_tag_id;

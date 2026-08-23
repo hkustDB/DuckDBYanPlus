@@ -28,7 +28,7 @@ DATABASE_ROOT=$(cd -- "${DATABASE_ROOT}" && pwd)
 
 ALL_SUITES=(graph lsqb dsb_agg dsb_spj tpch job)
 ALL_REWRITER_SUITES=(graph lsqb dsb_agg dsb_spj tpch)
-ALL_YANNAKAKIS_SUITES=(graph lsqb tpch job)
+ALL_YANNAKAKIS_SUITES=(graph lsqb dsb_agg dsb_spj tpch job)
 REWRITER_SUITES=()
 YANNAKAKIS_SUITES=()
 ORIGIN_SKIP_ENTRIES=()
@@ -183,7 +183,16 @@ expand_yannakakis_token() {
             fi
         done
         ;;
-    graph | lsqb | tpch | job)
+    dsb)
+        if [[ "${mode}" == add ]]; then
+            add_yannakakis_suite dsb_agg
+            add_yannakakis_suite dsb_spj
+        else
+            remove_yannakakis_suite dsb_agg
+            remove_yannakakis_suite dsb_spj
+        fi
+        ;;
+    graph | lsqb | dsb_agg | dsb_spj | tpch | job)
         if [[ "${mode}" == add ]]; then
             add_yannakakis_suite "${token}"
         else
@@ -197,7 +206,7 @@ expand_yannakakis_token() {
         ;;
     *)
         echo "Error: unknown Yannakakis suite '${token}'." >&2
-        echo "Use none, all, graph, lsqb, tpch, or job." >&2
+        echo "Use none, all, dsb, graph, lsqb, dsb_agg, dsb_spj, tpch, or job." >&2
         exit 1
         ;;
     esac
@@ -392,6 +401,12 @@ yannakakis_suite_directory() {
     lsqb)
         printf 'lsqb_yannakakis_rewrite\n'
         ;;
+    dsb_agg)
+        printf 'dsb_agg_yannakakis_rewrite\n'
+        ;;
+    dsb_spj)
+        printf 'dsb_spj_yannakakis_rewrite\n'
+        ;;
     tpch)
         printf 'tpch_yannakakis_rewrite\n'
         ;;
@@ -428,7 +443,7 @@ validate_yannakakis_coverage() {
     local missing=()
 
     case "${suite}" in
-    graph | lsqb | tpch)
+    graph | lsqb | dsb_agg | dsb_spj | tpch)
         original_directory=${suite}
         ;;
     job)
@@ -480,7 +495,7 @@ Options:
   --no-rewriter              disable all rewritten-query runs
   --rewriter-only            run rewritten SQL only; skip origin and Yan+
   --yannakakis-only          run Yannakakis-style rewrite SQL only
-  --yannakakis=SELECTION     select graph, lsqb, tpch, job, all, or none
+  --yannakakis=SELECTION     select graph, lsqb, dsb, tpch, job, all, or none
   --skip-yannakakis=SELECTION remove suites from the Yannakakis selection
   --skip-origin=GROUP        replace defaults with suite:query[,query]; repeatable
   --no-origin-skip           run every selected query with origin
@@ -495,8 +510,8 @@ Environment:
   YANPLUS_REWRITER_SUITES rewriter suites: none, all, dsb, or explicit suite
                           names (default: dsb)
   YANPLUS_REWRITER_SKIP   rewriter suites to remove from that selection
-  YANPLUS_YANNAKAKIS_SUITES Yannakakis suites: none, all, graph, lsqb,
-                          tpch, or job (default: all)
+  YANPLUS_YANNAKAKIS_SUITES Yannakakis suites: none, all, graph, lsqb, dsb,
+                          dsb_agg, dsb_spj, tpch, or job (default: all)
   YANPLUS_YANNAKAKIS_SKIP Yannakakis suites to remove from that selection
   YANPLUS_ORIGIN_SKIP     origin-only suite:query[,query] groups (default:
                           graph:q4,q5,q7 lsqb:q8,q9)
@@ -592,7 +607,7 @@ fi
 if ((YANNAKAKIS_ONLY != 0)); then
     if ((${#YANNAKAKIS_SUITES[@]} == 0)); then
         echo "Error: --yannakakis-only selected no Yannakakis suites." >&2
-        echo "Use --yannakakis=all or an explicit graph, lsqb, tpch, or job selection." >&2
+        echo "Use --yannakakis=all or an explicit graph, lsqb, dsb, tpch, or job selection." >&2
         exit 1
     fi
 elif ((REWRITER_ONLY != 0)); then

@@ -5,7 +5,7 @@
 CREATE OR REPLACE TEMP VIEW ya_q1_rewriteYa0_base_g1 AS
 SELECT g1.*
 FROM Graph AS g1
-WHERE (g1.src < 1000);
+WHERE (g1.src < 800);
 
 CREATE OR REPLACE TEMP VIEW ya_q1_rewriteYa0_base_g2 AS
 SELECT g2.*
@@ -49,4 +49,4 @@ FROM ya_q1_rewriteYa0_down_g1 AS g1,
      ya_q1_rewriteYa0_down_g3 AS g3
 WHERE (g1.dst = g2.src)
   AND (g2.dst = g3.src)
-  AND (g1.src < 1000);
+  AND (g1.src < 800);

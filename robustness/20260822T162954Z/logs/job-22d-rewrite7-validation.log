@@ -1,0 +1,6 @@
+status=ok
+
+[stdout]
+01 Distribution,1.6,(#1.1)
+
+[stderr]

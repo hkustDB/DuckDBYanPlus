@@ -1,0 +1,17 @@
+metric,value
+expected_rewrite_plans,46
+measured_rewrite_plans,37
+wins_by_mean,30
+wins_by_median,30
+all_plans_outperform_by_mean,false
+all_plans_outperform_by_median,false
+mean_of_median_speedups,1.862453
+median_of_median_speedups,1.745144
+geomean_of_median_speedups,1.495665
+p05_median_speedup,0.456266
+p95_median_speedup,4.465623
+min_median_speedup,0.183995
+max_median_speedup,4.557299
+mean_of_mean_speedups,1.880073
+median_of_mean_speedups,1.719924
+geomean_of_mean_speedups,1.490160
