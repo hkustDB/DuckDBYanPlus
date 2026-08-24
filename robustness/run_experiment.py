@@ -342,7 +342,7 @@ def validate_plans(
     logs: pathlib.Path,
 ) -> tuple[list[dict[str, str]], set[tuple[str, str, str]]]:
     rows = []
-    valid = set()
+    timing_eligible = set()
     by_query: dict[tuple[str, str], list[Plan]] = {}
     for plan in plans:
         by_query.setdefault((plan.suite, plan.query), []).append(plan)
@@ -368,14 +368,15 @@ def validate_plans(
             if plan.kind == "original" and status == "ok":
                 original_result = normalized
                 matches = True
-                valid.add(plan.key)
+                timing_eligible.add(plan.key)
             elif plan.kind == "rewrite" and status == "ok":
                 if original_result is None:
-                    status = "error"
-                    error = "original query validation failed"
+                    status = "unverified"
+                    error = "original result unavailable; rewrite will still be timed"
+                    timing_eligible.add(plan.key)
                 elif normalized == original_result:
                     matches = True
-                    valid.add(plan.key)
+                    timing_eligible.add(plan.key)
                 else:
                     status = "mismatch"
                     error = "result differs from query.sql"
@@ -392,7 +393,7 @@ def validate_plans(
                     "error": error.replace("\n", " "),
                 }
             )
-    return rows, valid
+    return rows, timing_eligible
 
 
 def write_metadata(
@@ -526,7 +527,7 @@ def main() -> int:
     write_metadata(output_directory, args, executable, databases, version, len(plans))
 
     print(f"Validating exact results for {len(plans)} plans...")
-    validation_rows, valid = validate_plans(
+    validation_rows, timing_eligible = validate_plans(
         plans,
         executable,
         databases,
@@ -541,16 +542,31 @@ def main() -> int:
     validation_writer.writerows(validation_rows)
     validation_file.close()
 
-    valid_plans = [plan for plan in plans if plan.key in valid]
-    validation_failures = len(plans) - len(valid_plans)
-    print(f"Validated {len(valid_plans)}/{len(plans)} plans; failures={validation_failures}.")
+    timed_plans = [plan for plan in plans if plan.key in timing_eligible]
+    exact_validation_count = sum(
+        row["status"] == "ok" and row["matches_original"] == "true"
+        for row in validation_rows
+    )
+    unverified_rewrites = sum(
+        row["plan_kind"] == "rewrite" and row["status"] == "unverified"
+        for row in validation_rows
+    )
+    validation_failures = sum(
+        row["status"] in {"timeout", "error", "mismatch"}
+        for row in validation_rows
+    )
+    print(
+        f"Eligible for timing: {len(timed_plans)}/{len(plans)} plans; "
+        f"exactly validated={exact_validation_count}; "
+        f"unverified rewrites={unverified_rewrites}; failures={validation_failures}."
+    )
 
     raw_file, raw_writer = csv_writer(output_directory / "raw_results.csv", RAW_FIELDS)
     failed_timing_plans: set[tuple[str, str, str]] = set()
     execution_order = 0
     rng = random.Random(args.seed)
     for repetition in range(1, args.repetitions + 1):
-        block = list(valid_plans)
+        block = list(timed_plans)
         rng.shuffle(block)
         print(f"Timing randomized block {repetition}/{args.repetitions} ({len(block)} plans)...")
         for plan in block:
@@ -613,9 +629,10 @@ def main() -> int:
     ]
     summary = subprocess.run(summary_command, check=False)
     print(f"Results: {output_directory}")
-    if validation_failures or failed_timing_plans or summary.returncode:
+    if validation_failures or unverified_rewrites or failed_timing_plans or summary.returncode:
         print(
             f"Experiment incomplete: validation_failures={validation_failures}, "
+            f"unverified_rewrites={unverified_rewrites}, "
             f"timing_failures={len(failed_timing_plans)}.",
             file=sys.stderr,
         )

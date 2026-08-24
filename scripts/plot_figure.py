@@ -69,20 +69,27 @@ BAR_LINEWIDTH = 0.3
 TIME_LIMIT_SECONDS = 7200.0
 TIMEOUT_LOG_CEILING_SECONDS = 1.0e4
 JOB_Y_LIMITS = (1.0e-2, 1.0e4)
-MERGED_FIGURE_SIZE = (50.0, 7.0)
-MERGED_AXIS_LABEL_SIZE = 25
-MERGED_TICK_LABEL_SIZE = 25
-MERGED_SUBGRAPH_TITLE_SIZE = 25
-MERGED_LEGEND_SIZE = 23.5
-MERGED_ANNOTATION_SIZE = 12
+MERGED_FIGURE_SIZE = (50.0, 8.0)
+# The merged plots are almost twice as wide as the JOB plots. Scale their text
+# accordingly so both figure families have the same apparent type size when
+# placed at the same document width.
+MERGED_AXIS_LABEL_SIZE = 40
+MERGED_TICK_LABEL_SIZE = 39
+MERGED_TPCH_DSB_TICK_LABEL_SIZE = 36
+MERGED_SUBGRAPH_TITLE_SIZE = 39
+MERGED_LEGEND_SIZE = 40
+MERGED_ANNOTATION_SIZE = 21.5
+MERGED_LEGEND_Y = 1.10
+MERGED_XTICK_PAD = 5
+MERGED_SUBGRAPH_TITLE_Y = -0.20
 JOB_AXIS_LABEL_SIZE = 22.5
 JOB_TICK_LABEL_SIZE = 22
 JOB_LEGEND_SIZE = 22.5
 JOB_ANNOTATION_SIZE = 12
 JOB_FIGURE_COUNT = 5
-JOB_FIGURE_SIZE = (28.0, 5.0)
+JOB_FIGURE_SIZE = (28.0, 4.6)
 JOB_ALL_FIGURE_SIZE = JOB_FIGURE_SIZE
-JOB_GROUP_WIDTH = 0.68
+JOB_GROUP_WIDTH = 0.76
 JOB_FAMILY_RANGES = ((1, 7), (8, 14), (15, 20), (21, 27), (28, 33))
 
 
@@ -214,39 +221,34 @@ def load_workbook_suite(
     )
 
 
-def load_workbook_dsb(workbook_path: Path) -> FigureData:
-    query_ids: List[str] = []
-    query_labels: List[str] = []
-    combined_series: Dict[str, List[Optional[float]]] = {
-        series_name: [] for series_name in SERIES_ORDER
-    }
-    missing_cells = 0
-
+def load_workbook_dsb(workbook_path: Path) -> Tuple[FigureData, ...]:
+    panels = []
     for sheet_name, prefix in (("dsbspj", "SPJ"), ("dsbagg", "AGG")):
         part_ids, values_by_column = workbook_sheet_rows(workbook_path, sheet_name)
-        query_ids.extend(f"{prefix.lower()}-{query}" for query in part_ids)
-        query_labels.extend(f"{prefix}-Q{query.upper()}" for query in part_ids)
-        for column, series_name in WORKBOOK_COLUMN_SERIES.items():
-            values = values_by_column[column]
-            combined_series[series_name].extend(values)
-            missing_cells += sum(value is None for value in values)
-
-    series = {
-        series_name: values
-        for series_name, values in combined_series.items()
-        if any(value is not None for value in values)
-    }
-    notes = ["all runtimes loaded from workbook sheets 'dsbspj' and 'dsbagg'"]
-    if missing_cells:
-        notes.append(f"{missing_cells} unavailable workbook values are shown as N/A")
-    return FigureData(
-        slug="dsb",
-        title="DSB",
-        query_ids=query_ids,
-        query_labels=query_labels,
-        series=series,
-        notes=notes,
-    )
+        series = {
+            WORKBOOK_COLUMN_SERIES[column]: values
+            for column, values in values_by_column.items()
+            if any(value is not None for value in values)
+        }
+        missing_cells = sum(
+            value is None for values in values_by_column.values() for value in values
+        )
+        notes = [f"all runtimes loaded from workbook sheet {sheet_name!r}"]
+        if missing_cells:
+            notes.append(
+                f"{missing_cells} unavailable workbook values are shown as N/A"
+            )
+        panels.append(
+            FigureData(
+                slug=f"dsb_{prefix.lower()}",
+                title=f"DSB-{prefix}",
+                query_ids=[f"{prefix.lower()}-{query}" for query in part_ids],
+                query_labels=[display_query(query) for query in part_ids],
+                series=series,
+                notes=notes,
+            )
+        )
+    return tuple(panels)
 
 
 def choose_scale(values: Iterable[float], requested: str) -> str:
@@ -388,7 +390,12 @@ def plot_panel(
     return active_scale
 
 
-def plot_combined_axis(axis, panels: Sequence[FigureData], requested_scale: str):
+def plot_combined_axis(
+    axis,
+    panels: Sequence[FigureData],
+    requested_scale: str,
+    x_tick_label_size: float = MERGED_TICK_LABEL_SIZE,
+):
     all_values = [
         value
         for panel in panels
@@ -450,7 +457,7 @@ def plot_combined_axis(axis, panels: Sequence[FigureData], requested_scale: str)
         midpoint = (first + last) / 2
         axis.text(
             midpoint,
-            -0.075,
+            MERGED_SUBGRAPH_TITLE_Y,
             title,
             transform=axis.get_xaxis_transform(),
             ha="center",
@@ -466,9 +473,9 @@ def plot_combined_axis(axis, panels: Sequence[FigureData], requested_scale: str)
         query_labels,
         rotation=0,
         ha="center",
-        fontsize=MERGED_TICK_LABEL_SIZE,
+        fontsize=x_tick_label_size,
     )
-    axis.tick_params(axis="x", pad=2)
+    axis.tick_params(axis="x", pad=MERGED_XTICK_PAD)
     axis.tick_params(axis="y", labelsize=MERGED_TICK_LABEL_SIZE)
     format_runtime_axis(axis, active_scale, all_values)
     axis.set_xlim(-0.52, len(query_labels) - 0.48)
@@ -522,23 +529,37 @@ def plot_merged(
     formats: Sequence[str],
     dpi: int,
     scale: str,
+    *,
+    show_legend: bool = True,
+    x_tick_label_size: float = MERGED_TICK_LABEL_SIZE,
 ):
     figure, axis = plt.subplots(figsize=MERGED_FIGURE_SIZE)
-    active_scale = plot_combined_axis(axis, panels, scale)
+    active_scale = plot_combined_axis(
+        axis,
+        panels,
+        scale,
+        x_tick_label_size=x_tick_label_size,
+    )
 
     present_series = {
         series_name for panel in panels for series_name in panel.series
     }
-    axis.legend(
-        handles=legend_handles(tuple(present_series)),
-        loc="lower center",
-        bbox_to_anchor=(0.5, 1.15),
-        ncol=min(4, len(present_series)),
-        frameon=False,
-        fontsize=MERGED_LEGEND_SIZE,
-        borderaxespad=0,
+    if show_legend:
+        axis.legend(
+            handles=legend_handles(tuple(present_series)),
+            loc="lower center",
+            bbox_to_anchor=(0.5, MERGED_LEGEND_Y),
+            ncol=min(4, len(present_series)),
+            frameon=False,
+            fontsize=MERGED_LEGEND_SIZE,
+            borderaxespad=0,
+        )
+    figure.subplots_adjust(
+        top=0.83 if show_legend else 0.95,
+        bottom=0.28,
+        left=0.06,
+        right=0.99,
     )
-    figure.subplots_adjust(top=0.83, bottom=0.19, left=0.04, right=0.99)
     return (
         save_figure(
             figure,
@@ -857,7 +878,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
         report_notes(graph_lsqb)
 
-    tpch_dsb = [available[name] for name in ("tpch", "dsb") if name in selected]
+    tpch_dsb = []
+    if "tpch" in selected:
+        tpch_dsb.append(available["tpch"])
+    if "dsb" in selected:
+        tpch_dsb.extend(available["dsb"])
     if tpch_dsb:
         destinations, active_scale = plot_merged(
             tpch_dsb,
@@ -866,6 +891,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             formats,
             args.dpi,
             args.scale,
+            show_legend=False,
+            x_tick_label_size=MERGED_TPCH_DSB_TICK_LABEL_SIZE,
         )
         print(
             "tpch/dsb: "

@@ -18,6 +18,9 @@ PLAN_FIELDS = (
     "query",
     "plan",
     "status",
+    "validation_status",
+    "matches_original",
+    "original_status",
     "n",
     "mean_s",
     "median_s",
@@ -30,12 +33,28 @@ PLAN_FIELDS = (
     "original_n",
     "original_mean_s",
     "original_median_s",
+    "original_min_s",
+    "original_timeout_lower_bound_s",
     "speedup_mean",
     "speedup_median",
+    "speedup_worst_case",
+    "speedup_lower_bound_worst_case",
     "improvement_mean_pct",
     "improvement_median_pct",
     "faster_by_mean",
     "faster_by_median",
+    "steady_beats_original",
+)
+
+ROBUST_QUERY_FIELDS = (
+    "Query",
+    "Original (s)",
+    "Rewrite average (s)",
+    "Rewrite median (s)",
+    "Fastest rewrite (s)",
+    "Slowest rewrite (s)",
+    "Rewrite run std (s)",
+    "# Rewrite Plan",
 )
 
 
@@ -109,6 +128,18 @@ def load_expected_repetitions(raw_path: pathlib.Path, grouped: dict[tuple[str, s
     return max((len(values) for values in grouped.values()), default=0)
 
 
+def load_timeout_seconds(raw_path: pathlib.Path) -> int | None:
+    metadata_path = raw_path.parent / "metadata.json"
+    if metadata_path.is_file():
+        try:
+            value = int(json.loads(metadata_path.read_text(encoding="utf-8"))["timeout_seconds"])
+            if value > 0:
+                return value
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            pass
+    return None
+
+
 def summarize(
     raw_path: pathlib.Path, validation_path: pathlib.Path, output_directory: pathlib.Path
 ) -> dict[str, object]:
@@ -121,6 +152,7 @@ def summarize(
         grouped[(row["suite"], row["query"], row["plan"])].append(float(row["seconds"]))
 
     expected_repetitions = load_expected_repetitions(raw_path, grouped)
+    timeout_seconds = load_timeout_seconds(raw_path)
     validation = {
         (row["suite"], row["query"], row["plan"]): row for row in validation_rows
     }
@@ -147,22 +179,47 @@ def summarize(
             and original_validation is not None
             and original_validation.get("status") == "ok"
         )
-        complete = (
-            semantic_ok
+        rewrite_timing_complete = (
+            rewrite_validation.get("status") in {"ok", "unverified"}
             and expected_repetitions > 0
             and len(values) == expected_repetitions
+        )
+        original_timing_complete = (
+            original_validation is not None
+            and original_validation.get("status") == "ok"
+            and expected_repetitions > 0
             and len(original_values) == expected_repetitions
         )
-        status = "measured" if complete else "incomplete"
+        complete = semantic_ok and rewrite_timing_complete and original_timing_complete
+        unverified_complete = (
+            rewrite_validation.get("status") == "unverified"
+            and rewrite_timing_complete
+            and original_validation is not None
+            and original_validation.get("status") != "ok"
+        )
+        if complete:
+            status = "measured"
+        elif unverified_complete:
+            status = "measured_original_unavailable"
+        else:
+            status = "incomplete"
         row: dict[str, object] = {
             "suite": suite,
             "query": query,
             "plan": plan,
             "status": status,
+            "validation_status": rewrite_validation.get("status", "missing"),
+            "matches_original": rewrite_validation.get("matches_original") == "true",
+            "original_status": (
+                original_validation.get("status", "missing")
+                if original_validation is not None
+                else "missing"
+            ),
             "n": len(values),
             "original_n": len(original_values),
             "faster_by_mean": False,
             "faster_by_median": False,
+            "steady_beats_original": False,
         }
         if values:
             row.update(describe(values))
@@ -170,19 +227,33 @@ def summarize(
             original_stats = describe(original_values)
             row["original_mean_s"] = original_stats["mean_s"]
             row["original_median_s"] = original_stats["median_s"]
+            row["original_min_s"] = original_stats["min_s"]
+        if (
+            original_validation is not None
+            and original_validation.get("status") == "timeout"
+            and timeout_seconds is not None
+        ):
+            row["original_timeout_lower_bound_s"] = timeout_seconds
         if complete:
             mean_speedup = float(row["original_mean_s"]) / float(row["mean_s"])
             median_speedup = float(row["original_median_s"]) / float(row["median_s"])
+            worst_case_speedup = float(row["original_min_s"]) / float(row["max_s"])
             row.update(
                 {
                     "speedup_mean": mean_speedup,
                     "speedup_median": median_speedup,
+                    "speedup_worst_case": worst_case_speedup,
                     "improvement_mean_pct": 100.0 * (1.0 - 1.0 / mean_speedup),
                     "improvement_median_pct": 100.0 * (1.0 - 1.0 / median_speedup),
                     "faster_by_mean": mean_speedup > 1.0,
                     "faster_by_median": median_speedup > 1.0,
+                    "steady_beats_original": worst_case_speedup > 1.0,
                 }
             )
+        elif unverified_complete and timeout_seconds is not None and row["original_status"] == "timeout":
+            lower_bound_speedup = timeout_seconds / float(row["max_s"])
+            row["speedup_lower_bound_worst_case"] = lower_bound_speedup
+            row["steady_beats_original"] = lower_bound_speedup > 1.0
         plan_rows.append(row)
 
     output_directory.mkdir(parents=True, exist_ok=True)
@@ -257,6 +328,59 @@ def summarize(
                 serialized[field] = value
         serialized_query_rows.append(serialized)
     write_csv(output_directory / "query_summary.csv", query_fields, serialized_query_rows)
+
+    robust_query_rows: list[dict[str, object]] = []
+    for (suite, query), rows in sorted(plans_by_query.items()):
+        retained = [
+            row
+            for row in rows
+            if row["status"] in {"measured", "measured_original_unavailable"}
+            and bool(row["steady_beats_original"])
+        ]
+        if not retained:
+            continue
+        retained_values = [
+            value
+            for row in retained
+            for value in grouped[(suite, query, str(row["plan"]))]
+        ]
+        retained_stats = describe(retained_values)
+        original_unavailable = any(
+            row["status"] == "measured_original_unavailable" for row in retained
+        )
+        if original_unavailable:
+            original_execution_time = timeout_seconds
+        else:
+            original_execution_time = float(retained[0]["original_median_s"])
+        robust_query_rows.append(
+            {
+                "Query": f"{suite}-{query}",
+                "Original (s)": original_execution_time,
+                "Rewrite average (s)": retained_stats["mean_s"],
+                "Rewrite median (s)": retained_stats["median_s"],
+                "Fastest rewrite (s)": retained_stats["min_s"],
+                "Slowest rewrite (s)": retained_stats["max_s"],
+                "Rewrite run std (s)": retained_stats["stdev_s"],
+                "# Rewrite Plan": len(retained),
+            }
+        )
+
+    serialized_robust_query_rows = []
+    for row in robust_query_rows:
+        serialized = {}
+        for field, value in row.items():
+            if isinstance(value, bool):
+                serialized[field] = truth(value)
+            elif isinstance(value, float):
+                serialized[field] = number(value, 6)
+            else:
+                serialized[field] = value
+        serialized_robust_query_rows.append(serialized)
+    write_csv(
+        output_directory / "robust_query_statistics.csv",
+        ROBUST_QUERY_FIELDS,
+        serialized_robust_query_rows,
+    )
 
     measured = [row for row in plan_rows if row["status"] == "measured"]
     median_speedups = [float(row["speedup_median"]) for row in measured]

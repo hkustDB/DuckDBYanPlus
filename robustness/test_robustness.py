@@ -67,6 +67,47 @@ create or replace view v as select ';' AS value;
         )
         self.assertIn("COPY (\nSELECT 1\n) TO '/dev/null' (FORMAT CSV);", command)
 
+    def test_rewrite_remains_timing_eligible_when_original_times_out(self) -> None:
+        original = run_experiment.Plan(
+            "lsqb",
+            "q9",
+            "query",
+            "original",
+            run_experiment.ROOT / "lsqb-q9/query.sql",
+            (),
+            "SELECT 1",
+        )
+        rewrite = run_experiment.Plan(
+            "lsqb",
+            "q9",
+            "rewrite1",
+            "rewrite",
+            run_experiment.ROOT / "lsqb-q9/rewrite1.sql",
+            (),
+            "SELECT 1",
+        )
+        results = [
+            run_experiment.CommandResult("timeout", b"", b"", "timed out after 600 seconds"),
+            run_experiment.CommandResult("ok", b"42\n", b"", ""),
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            with mock.patch.object(run_experiment, "run_command", side_effect=results):
+                rows, timing_eligible = run_experiment.validate_plans(
+                    [original, rewrite],
+                    pathlib.Path("duckdb"),
+                    {"lsqb": pathlib.Path("lsqb.db")},
+                    [],
+                    1,
+                    600,
+                    pathlib.Path(temporary),
+                )
+        self.assertNotIn(original.key, timing_eligible)
+        self.assertIn(rewrite.key, timing_eligible)
+        self.assertEqual(rows[0]["status"], "timeout")
+        self.assertEqual(rows[1]["status"], "unverified")
+        self.assertEqual(rows[1]["matches_original"], "false")
+        self.assertTrue(rows[1]["result_sha256"])
+
 
 class SummaryTest(unittest.TestCase):
     def write_csv(
@@ -132,6 +173,15 @@ class SummaryTest(unittest.TestCase):
             overall = summarize.summarize(raw, validation, directory)
             self.assertTrue(overall["all_plans_outperform_by_median"])
             self.assertTrue(overall["all_plans_outperform_by_mean"])
+            with (directory / "robust_query_statistics.csv").open(
+                newline="", encoding="utf-8"
+            ) as source:
+                robust_rows = list(csv.DictReader(source))
+            self.assertEqual(len(robust_rows), 1)
+            self.assertEqual(list(robust_rows[0]), list(summarize.ROBUST_QUERY_FIELDS))
+            self.assertEqual(robust_rows[0]["# Rewrite Plan"], "2")
+            self.assertEqual(robust_rows[0]["Fastest rewrite (s)"], "4.000000")
+            self.assertEqual(robust_rows[0]["Slowest rewrite (s)"], "8.000000")
 
             self.write_csv(raw, run_experiment.RAW_FIELDS, raw_rows([12.0, 13.0, 11.0]))
             overall = summarize.summarize(raw, validation, directory)
@@ -140,6 +190,82 @@ class SummaryTest(unittest.TestCase):
                 "do not support",
                 (directory / "summary.md").read_text(encoding="utf-8"),
             )
+            with (directory / "robust_query_statistics.csv").open(
+                newline="", encoding="utf-8"
+            ) as source:
+                robust_rows = list(csv.DictReader(source))
+            self.assertEqual(robust_rows[0]["# Rewrite Plan"], "1")
+
+    def test_timeout_original_uses_lower_bound_and_keeps_rewrite_statistics(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = pathlib.Path(temporary)
+            raw = directory / "raw_results.csv"
+            validation = directory / "validation.csv"
+            (directory / "metadata.json").write_text(
+                json.dumps({"repetitions": 3, "timeout_seconds": 600}),
+                encoding="utf-8",
+            )
+            self.write_csv(
+                validation,
+                run_experiment.VALIDATION_FIELDS,
+                [
+                    {
+                        "suite": "lsqb",
+                        "query": "q9",
+                        "plan": "query",
+                        "plan_kind": "original",
+                        "source_file": "lsqb-q9/query.sql",
+                        "status": "timeout",
+                        "matches_original": "false",
+                        "result_sha256": "",
+                        "error": "timed out after 600 seconds",
+                    },
+                    {
+                        "suite": "lsqb",
+                        "query": "q9",
+                        "plan": "rewrite1",
+                        "plan_kind": "rewrite",
+                        "source_file": "lsqb-q9/rewrite1.sql",
+                        "status": "unverified",
+                        "matches_original": "false",
+                        "result_sha256": "hash",
+                        "error": "original result unavailable; rewrite will still be timed",
+                    },
+                ],
+            )
+            self.write_csv(
+                raw,
+                run_experiment.RAW_FIELDS,
+                [
+                    {
+                        "suite": "lsqb",
+                        "query": "q9",
+                        "plan": "rewrite1",
+                        "plan_kind": "rewrite",
+                        "source_file": "lsqb-q9/rewrite1.sql",
+                        "repetition": repetition,
+                        "execution_order": repetition,
+                        "seconds": seconds,
+                        "status": "ok",
+                        "error": "",
+                    }
+                    for repetition, seconds in enumerate((5.0, 6.0, 4.0), start=1)
+                ],
+            )
+            summarize.summarize(raw, validation, directory)
+            with (directory / "robust_query_statistics.csv").open(
+                newline="", encoding="utf-8"
+            ) as source:
+                rows = list(csv.DictReader(source))
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["Query"], "lsqb-q9")
+            self.assertEqual(rows[0]["Original (s)"], "600")
+            self.assertEqual(rows[0]["# Rewrite Plan"], "1")
+            self.assertEqual(rows[0]["Rewrite average (s)"], "5.000000")
+            self.assertEqual(rows[0]["Rewrite median (s)"], "5.000000")
+            self.assertEqual(rows[0]["Fastest rewrite (s)"], "4.000000")
+            self.assertEqual(rows[0]["Slowest rewrite (s)"], "6.000000")
+            self.assertEqual(rows[0]["Rewrite run std (s)"], "1.000000")
 
 
 if __name__ == "__main__":

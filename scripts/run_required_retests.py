@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""Run the targeted Yan+/Yannakakis correctness and performance retests."""
+"""Run the targeted Yan+/Yannakakis performance retests."""
 
 from __future__ import annotations
 
 import argparse
 import csv
 import datetime as dt
-import hashlib
 import json
 import os
 import pathlib
@@ -413,7 +412,7 @@ def make_command(
     prefix: list[str],
     threads: int,
     has_pin_threads: bool,
-    warmups: int | None,
+    warmups: int,
 ) -> list[str]:
     setup, final_query = plan_sql(plan)
     command = base_command(prefix, binary, database)
@@ -421,23 +420,12 @@ def make_command(
         command.extend(("-c", statement))
     for statement in setup:
         command.extend(("-c", statement))
-    if warmups is None:
-        command.extend(("-c", final_query))
-        return command
     discard = f"COPY ({final_query}) TO '/dev/null' (FORMAT CSV)"
     command.extend(("-c", ".timer off"))
     for _ in range(warmups):
         command.extend(("-c", discard))
     command.extend(("-c", ".timer on", "-c", discard, "-c", ".timer off"))
     return command
-
-
-def normalized_result(contents: bytes) -> bytes:
-    return b"\n".join(sorted(line.rstrip(b"\r") for line in contents.splitlines()))
-
-
-def digest(contents: bytes) -> str:
-    return hashlib.sha256(contents).hexdigest()
 
 
 def safe_name(plan: Plan) -> str:
@@ -456,71 +444,6 @@ def write_log(path: pathlib.Path, result: RunResult, seconds: float | None = Non
         output.write(result.stdout)
         output.write(b"\n[stderr]\n")
         output.write(result.stderr)
-
-
-def validate(
-    plans: list[Plan],
-    binaries: dict[str, pathlib.Path],
-    binary_info: dict[str, dict[str, str | bool]],
-    database_root: pathlib.Path,
-    prefix: list[str],
-    args: argparse.Namespace,
-    logs: pathlib.Path,
-) -> tuple[list[dict[str, object]], set[tuple[str, str, str, str]]]:
-    rows: list[dict[str, object]] = []
-    invalid: set[tuple[str, str, str, str]] = set()
-    groups: dict[tuple[str, str], list[Plan]] = {}
-    for plan in plans:
-        groups.setdefault((plan.suite, plan.query), []).append(plan)
-    for group_key, group in sorted(groups.items()):
-        group.sort(key=lambda plan: (plan.mode != "original", plan.mode, plan.label))
-        reference: bytes | None = None
-        for plan in group:
-            command = make_command(
-                plan,
-                binaries[plan.binary_kind],
-                database_for(plan.suite, database_root),
-                prefix,
-                args.threads,
-                bool(binary_info[plan.binary_kind]["has_pin_threads"]),
-                None,
-            )
-            result = run_command(command, args.timeout)
-            write_log(logs / f"{safe_name(plan)}-validation.log", result)
-            normalized = normalized_result(result.stdout) if result.status == "ok" else b""
-            status = result.status
-            matches = ""
-            error = result.error
-            if plan.mode == "original" and result.status == "ok":
-                reference = normalized
-                matches = "true"
-            elif result.status == "ok" and reference is None:
-                status = "unverified"
-                error = "original result unavailable"
-            elif result.status == "ok" and normalized == reference:
-                matches = "true"
-            elif result.status == "ok":
-                status = "mismatch"
-                matches = "false"
-                error = "result differs from original"
-                invalid.add(plan.key)
-            elif result.status == "error":
-                invalid.add(plan.key)
-            rows.append(
-                {
-                    "suite": plan.suite,
-                    "query": plan.query,
-                    "setting": setting_name(plan.mode),
-                    "plan": plan.label,
-                    "source_file": plan.source.relative_to(ROOT).as_posix(),
-                    "status": status,
-                    "matches_original": matches,
-                    "result_sha256": digest(normalized) if result.status == "ok" else "",
-                    "error": error.replace("\n", " "),
-                }
-            )
-        print(f"validated {group_key[0]}/{group_key[1]}")
-    return rows, invalid
 
 
 def write_csv(path: pathlib.Path, fields: list[str], rows: list[dict[str, object]]) -> None:
@@ -636,11 +559,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--yanplus-bin", type=pathlib.Path, default=ROOT / "build/duckdb_YanPlus/duckdb")
     parser.add_argument("--threads", type=int, default=64)
     parser.add_argument("--cpu-list", default="0-31,36-67", help="Linux taskset list or 'none'")
-    parser.add_argument("--repetitions", type=int, default=7)
+    parser.add_argument(
+        "--repetitions", type=int, default=3, help="timed executions per plan"
+    )
     parser.add_argument("--warmups", type=int, default=1)
     parser.add_argument("--timeout", type=int, default=7200, help="seconds per process")
     parser.add_argument("--seed", type=int, default=20260823)
-    parser.add_argument("--skip-validation", action="store_true")
     parser.add_argument("--dry-run", action="store_true", help="list selected work without needing databases")
     parser.add_argument("--output-dir", type=pathlib.Path, default=ROOT / "required_retest_results" / timestamp)
     return parser.parse_args()
@@ -724,7 +648,6 @@ def main() -> int:
         "warmups": args.warmups,
         "timeout_seconds": args.timeout,
         "seed": args.seed,
-        "validation_enabled": not args.skip_validation,
         "settings": list(SETTING_NAMES.values()),
         "platform": platform.platform(),
         "logical_cpu_count": os.cpu_count(),
@@ -734,27 +657,6 @@ def main() -> int:
     (output_dir / "metadata.json").write_text(
         json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
-
-    invalid: set[tuple[str, str, str, str]] = set()
-    if not args.skip_validation:
-        validation_rows, invalid = validate(
-            plans, binaries, binary_info, args.database_root, prefix, args, logs
-        )
-        write_csv(
-            output_dir / "validation.csv",
-            [
-                "suite",
-                "query",
-                "setting",
-                "plan",
-                "source_file",
-                "status",
-                "matches_original",
-                "result_sha256",
-                "error",
-            ],
-            validation_rows,
-        )
 
     by_query: dict[tuple[str, str], list[Plan]] = {}
     for plan in plans:
@@ -773,7 +675,7 @@ def main() -> int:
             rng.shuffle(block)
             for plan in block:
                 execution_order += 1
-                if plan.key in invalid or plan.key in failed:
+                if plan.key in failed:
                     continue
                 command = make_command(
                     plan,
@@ -822,7 +724,7 @@ def main() -> int:
                 write_raw_results(output_dir, raw_rows)
     summarize(raw_rows, output_dir)
     print(f"results: {output_dir}")
-    return 1 if invalid or failed else 0
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

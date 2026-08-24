@@ -148,7 +148,7 @@ def plot(path: Path, output_dir: Path, formats: Sequence[str], dpi: int):
         borderaxespad=0,
     )
     axis.margins(x=0.08)
-    figure.subplots_adjust(top=0.86, bottom=0.14, left=0.14, right=0.98)
+    figure.subplots_adjust(top=0.86, bottom=0.14, left=0.18, right=0.98)
 
     output_dir.mkdir(parents=True, exist_ok=True)
     destinations = []

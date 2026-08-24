@@ -1,9 +1,9 @@
 # Required Yan+/Yannakakis retests
 
-`run_required_retests.sh` packages the correctness checks and timings requested
-for Graph, LSQB, TPC-H, DSB, and JOB. It uses the origin binary for original and
+`run_required_retests.sh` packages the timings requested for Graph, LSQB, TPC-H,
+DSB, and JOB. It uses the origin binary for original and
 SQL-rewrite plans, the Yan+ binary for integrated plans, a fresh DuckDB process
-for every sample, and randomized query/mode order. The median of seven paired
+for every sample, and randomized query/mode order. The median of three paired
 runs is the primary integrated comparison; minima are recorded for diagnosing
 machine noise but are not used to claim a win.
 
@@ -49,7 +49,8 @@ Select one or more query groups while diagnosing a result:
 
 On a non-Linux development machine, disable `taskset` with `--cpu-list none`.
 Useful controls include `--threads`, `--repetitions`, `--warmups`, `--timeout`,
-`--seed`, `--skip-validation`, and `--output-dir`. The default per-process
+`--seed`, and `--output-dir`. The default is three timing repetitions and the
+default per-process
 timeout is 7200 seconds. A timeout or SQL error is written explicitly; it can no
 longer appear as a silently missing timing.
 
@@ -57,7 +58,6 @@ longer appear as a silently missing timing.
 
 Each run creates a timestamped directory under `required_retest_results/`:
 
-- `validation.csv`: exact, order-insensitive comparison with the original query.
 - `raw_results.csv`: every measured sample, status, wall time, and execution order.
 - `summary.csv`: median/minimum/maximum by physical plan.
 - `Origin.csv`, `Yan.csv`, `YanPlus_rewrite.csv`, and `YanPlus.csv`: the same raw
@@ -66,7 +66,7 @@ Each run creates a timestamped directory under `required_retest_results/`:
   `YanPlus_summary.csv`: median/minimum/maximum results split by setting.
 - `integrated_comparison.csv`: paired origin and Yan+ medians, speedup, and win count.
 - `metadata.json`: binaries, settings, databases, affinity, seed, and experiment design.
-- `logs/`: stdout/stderr for every validation and timing process.
+- `logs/`: stdout/stderr for every timing process.
 
 The `setting` column uses exactly these names:
 

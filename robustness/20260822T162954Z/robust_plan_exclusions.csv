@@ -1,0 +1,23 @@
+query_name,rewrite_plan_number,exclusion_reason,validation_status,validation_error,completed_repetitions,expected_repetitions,original_average_time_s,original_median_time_s,original_min_time_s,rewrite_average_time_s,rewrite_median_time_s,rewrite_std_time_s,rewrite_max_time_s,worst_case_speedup_x,timeout_seconds
+job-15d,4,not_faster_in_every_observed_run,ok,,10,10,5.559900,5.635000,5.063000,7.999300,8.085000,0.465292,8.662000,0.584507,600
+job-15d,5,not_faster_in_every_observed_run,ok,,10,10,5.559900,5.635000,5.063000,5.116700,5.118000,0.335238,5.603000,0.903623,600
+job-17a,1,not_faster_in_every_observed_run,ok,,10,10,7.181200,7.368000,5.647000,6.524200,6.569000,0.182318,6.718000,0.840578,600
+job-17a,4,not_faster_in_every_observed_run,ok,,10,10,7.181200,7.368000,5.647000,6.518100,6.547500,0.244092,6.931000,0.814745,600
+job-17a,6,not_faster_in_every_observed_run,ok,,10,10,7.181200,7.368000,5.647000,5.474300,5.509000,0.392228,5.944000,0.950034,600
+job-22d,7,not_faster_in_every_observed_run,ok,,10,10,9.494600,9.565500,8.847000,14.961600,14.993000,0.527812,15.678000,0.564294,600
+job-22d,8,not_faster_in_every_observed_run,ok,,10,10,9.494600,9.565500,8.847000,10.021900,10.213500,0.794460,10.878000,0.813293,600
+job-2d,1,not_faster_in_every_observed_run,ok,,10,10,1.275700,1.302500,1.116000,2.489900,2.485500,0.058975,2.599000,0.429396,600
+job-2d,2,not_faster_in_every_observed_run,ok,,10,10,1.275700,1.302500,1.116000,1.744400,1.749500,0.059513,1.834000,0.608506,600
+job-2d,3,not_faster_in_every_observed_run,ok,,10,10,1.275700,1.302500,1.116000,1.267000,1.275000,0.125258,1.455000,0.767010,600
+job-2d,4,not_faster_in_every_observed_run,ok,,10,10,1.275700,1.302500,1.116000,7.255700,7.034000,0.546866,8.235000,0.135519,600
+job-2d,5,not_faster_in_every_observed_run,ok,,10,10,1.275700,1.302500,1.116000,7.382500,7.079000,0.963936,9.484000,0.117672,600
+job-2d,6,not_faster_in_every_observed_run,ok,,10,10,1.275700,1.302500,1.116000,1.158200,1.177500,0.046998,1.206000,0.925373,600
+lsqb-q1,1,result_mismatch,mismatch,result differs from query.sql,0,10,4.939500,4.792000,4.644000,,,,,,600
+lsqb-q9,1,original_validation_timeout,error,original query validation failed,0,10,,,,,,,,,600
+lsqb-q9,2,original_validation_timeout,error,original query validation failed,0,10,,,,,,,,,600
+lsqb-q9,3,original_validation_timeout,error,original query validation failed,0,10,,,,,,,,,600
+lsqb-q9,4,original_validation_timeout,error,original query validation failed,0,10,,,,,,,,,600
+lsqb-q9,5,original_validation_timeout,error,original query validation failed,0,10,,,,,,,,,600
+lsqb-q9,6,original_validation_timeout,error,original query validation failed,0,10,,,,,,,,,600
+lsqb-q9,7,original_validation_timeout,error,original query validation failed,0,10,,,,,,,,,600
+lsqb-q9,8,original_validation_timeout,error,original query validation failed,0,10,,,,,,,,,600

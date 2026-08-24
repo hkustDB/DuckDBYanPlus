@@ -58,10 +58,14 @@ temporary logical views and created outside the timed interval; because DuckDB
 views are lazy, their relational work is still executed by the timed final
 query.
 
-Before timing, the runner executes every plan and requires its CSV result to
-match `query.sql` exactly. A mismatch, SQL error, timeout, missing repetition, or
-non-origin Yan+ binary makes the experiment incomplete rather than silently
-discarding a plan.
+Before timing, the runner executes every plan. Rewrites that match a completed
+`query.sql` result are marked `ok`. If the original query errors or reaches the
+10-minute timeout, successful rewrites are marked `unverified` and are still
+timed; they are not represented as exact-result matches. A rewrite mismatch,
+rewrite SQL error, or rewrite timeout remains ineligible for timing. An
+unverified rewrite or other validation failure keeps the overall experiment
+scientifically incomplete even though the available performance measurements
+are written.
 
 The timestamped result directory contains:
 
@@ -70,15 +74,30 @@ The timestamped result directory contains:
 - `plan_statistics.csv`: mean, median, standard deviation, p05, p95, min, max,
   coefficient of variation, and mean/median speedups against DuckDB.
 - `query_summary.csv`: wins and aggregate speedups within each sampled query.
+- `robust_query_statistics.csv`: one row per query that has at least one strict
+  steady-win rewrite. Its columns, in order, are query, original median (or
+  timeout lower bound), pooled rewrite average, pooled rewrite median, fastest
+  rewrite run, slowest rewrite run, pooled rewrite standard deviation, and the
+  true number of retained rewrite plans.
 - `overall_summary.csv`: cross-plan mean, median, geometric mean, tail, and
   all-plans-win statistics.
 - `summary.md`: the human-readable conclusion.
 - `metadata.json` and `logs/`: reproducibility metadata and raw command output.
 
-The primary proof criterion is strict: all 46 rewrites must validate, finish all
-repetitions, and have a median runtime lower than the corresponding original.
-The arithmetic-mean criterion is reported independently. The summarizer never
-changes a negative or incomplete result into an all-plans-win conclusion.
+The full-set proof criterion is strict: all 46 rewrites must validate, finish
+all repetitions, and have a median runtime lower than the corresponding
+original. The arithmetic-mean criterion is reported independently. The
+summarizer never changes a negative or incomplete result into an all-plans-win
+conclusion.
+
+The curated `robust_query_statistics.csv` uses a stronger observed-run filter
+for its retained subset. With a measured original, a plan is retained only when
+its slowest rewrite run is faster than the original's fastest run. With a timed
+out original, `600` seconds is treated only as a censored lower bound and the
+rewrite's slowest run must remain below that bound. The CSV records the true
+number of retained rewrites; plan identities and exclusions remain available in
+the detailed plan statistics and validation outputs. The curated table must not
+be described as proof for discarded or semantically unverified plans.
 
 To regenerate a summary from an existing run:
 

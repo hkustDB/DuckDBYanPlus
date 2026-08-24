@@ -304,7 +304,7 @@ def draw_cache_gap(
         ha="center",
         fontsize=8.4 * visual_scale,
     )
-    axis.tick_params(axis="x", which="both", length=0, pad=5 * visual_scale)
+    axis.tick_params(axis="x", which="both", length=0, pad=2 * visual_scale)
     axis.tick_params(axis="y", labelsize=9.5 * visual_scale)
     axis.legend(
         loc="upper center",
