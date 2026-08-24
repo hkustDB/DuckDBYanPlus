@@ -28,6 +28,44 @@ class SqlPreparationTest(unittest.TestCase):
         self.assertEqual(args.warmups, 1)
         self.assertEqual(args.seed, 20260822)
         self.assertEqual(args.timeout, 600)
+        self.assertEqual(args.only_query, [])
+        self.assertFalse(args.rewrites_only)
+
+    def test_q9_rewrites_only_arguments_and_selection(self) -> None:
+        with mock.patch.object(
+            sys,
+            "argv",
+            [
+                "run_experiment.py",
+                "--only-query",
+                "lsqb-q9",
+                "--rewrites-only",
+            ],
+        ):
+            args = run_experiment.parse_args()
+        self.assertEqual(args.only_query, ["lsqb-q9"])
+        self.assertTrue(args.rewrites_only)
+        plans = [
+            run_experiment.Plan(
+                suite,
+                query,
+                name,
+                kind,
+                run_experiment.ROOT / f"{suite}-{query}/{name}.sql",
+                (),
+                "SELECT 1",
+            )
+            for suite, query, name, kind in (
+                ("lsqb", "q9", "query", "original"),
+                ("lsqb", "q9", "rewrite1", "rewrite"),
+                ("lsqb", "q9", "rewrite2", "rewrite"),
+                ("job", "22d", "rewrite1", "rewrite"),
+            )
+        ]
+        selected = run_experiment.select_plans(
+            plans, args.only_query, args.rewrites_only
+        )
+        self.assertEqual([plan.name for plan in selected], ["rewrite1", "rewrite2"])
 
     def test_split_and_temporary_view_conversion(self) -> None:
         sql = """-- a semicolon in a comment ;
@@ -107,6 +145,31 @@ create or replace view v as select ';' AS value;
         self.assertEqual(rows[1]["status"], "unverified")
         self.assertEqual(rows[1]["matches_original"], "false")
         self.assertTrue(rows[1]["result_sha256"])
+
+    def test_rewrite_only_validation_does_not_require_original_plan(self) -> None:
+        rewrite = run_experiment.Plan(
+            "lsqb",
+            "q9",
+            "rewrite1",
+            "rewrite",
+            run_experiment.ROOT / "lsqb-q9/rewrite1.sql",
+            (),
+            "SELECT 1",
+        )
+        result = run_experiment.CommandResult("ok", b"42\n", b"", "")
+        with tempfile.TemporaryDirectory() as temporary:
+            with mock.patch.object(run_experiment, "run_command", return_value=result):
+                rows, timing_eligible = run_experiment.validate_plans(
+                    [rewrite],
+                    pathlib.Path("duckdb"),
+                    {"lsqb": pathlib.Path("lsqb.db")},
+                    [],
+                    1,
+                    600,
+                    pathlib.Path(temporary),
+                )
+        self.assertEqual(rows[0]["status"], "unverified")
+        self.assertIn(rewrite.key, timing_eligible)
 
 
 class SummaryTest(unittest.TestCase):
@@ -266,6 +329,65 @@ class SummaryTest(unittest.TestCase):
             self.assertEqual(rows[0]["Fastest rewrite (s)"], "4.000000")
             self.assertEqual(rows[0]["Slowest rewrite (s)"], "6.000000")
             self.assertEqual(rows[0]["Rewrite run std (s)"], "1.000000")
+
+    def test_rewrite_only_summary_keeps_timings_without_baseline_claim(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = pathlib.Path(temporary)
+            raw = directory / "raw_results.csv"
+            validation = directory / "validation.csv"
+            (directory / "metadata.json").write_text(
+                json.dumps(
+                    {"repetitions": 3, "timeout_seconds": 600, "rewrites_only": True}
+                ),
+                encoding="utf-8",
+            )
+            self.write_csv(
+                validation,
+                run_experiment.VALIDATION_FIELDS,
+                [
+                    {
+                        "suite": "lsqb",
+                        "query": "q9",
+                        "plan": "rewrite1",
+                        "plan_kind": "rewrite",
+                        "source_file": "lsqb-q9/rewrite1.sql",
+                        "status": "unverified",
+                        "matches_original": "false",
+                        "result_sha256": "hash",
+                        "error": "original result unavailable; rewrite will still be timed",
+                    }
+                ],
+            )
+            self.write_csv(
+                raw,
+                run_experiment.RAW_FIELDS,
+                [
+                    {
+                        "suite": "lsqb",
+                        "query": "q9",
+                        "plan": "rewrite1",
+                        "plan_kind": "rewrite",
+                        "source_file": "lsqb-q9/rewrite1.sql",
+                        "repetition": repetition,
+                        "execution_order": repetition,
+                        "seconds": seconds,
+                        "status": "ok",
+                        "error": "",
+                    }
+                    for repetition, seconds in enumerate((5.0, 6.0, 4.0), start=1)
+                ],
+            )
+            summarize.summarize(raw, validation, directory)
+            with (directory / "plan_statistics.csv").open(
+                newline="", encoding="utf-8"
+            ) as source:
+                plan_rows = list(csv.DictReader(source))
+            self.assertEqual(plan_rows[0]["status"], "measured_original_unavailable")
+            self.assertEqual(plan_rows[0]["mean_s"], "5.000000000")
+            with (directory / "robust_query_statistics.csv").open(
+                newline="", encoding="utf-8"
+            ) as source:
+                self.assertEqual(list(csv.DictReader(source)), [])
 
 
 if __name__ == "__main__":

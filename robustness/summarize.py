@@ -194,8 +194,10 @@ def summarize(
         unverified_complete = (
             rewrite_validation.get("status") == "unverified"
             and rewrite_timing_complete
-            and original_validation is not None
-            and original_validation.get("status") != "ok"
+            and (
+                original_validation is None
+                or original_validation.get("status") != "ok"
+            )
         )
         if complete:
             status = "measured"

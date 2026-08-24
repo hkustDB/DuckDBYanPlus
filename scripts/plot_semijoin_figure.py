@@ -234,6 +234,7 @@ def draw_cache_gap(
     probe_times: Mapping[str, Sequence[float]],
     *,
     visual_scale: float = 1.0,
+    legend_y: float = 1.075,
 ) -> None:
     x_values = list(range(len(BOUNDARY_ORDER)))
     bloom = list(probe_times["bloom"])
@@ -310,7 +311,7 @@ def draw_cache_gap(
         loc="upper center",
         ncol=2,
         frameon=False,
-        bbox_to_anchor=(0.5, 1.075),
+        bbox_to_anchor=(0.5, legend_y),
         handlelength=2.3,
         fontsize=10 * visual_scale,
     )
@@ -350,7 +351,7 @@ def plot(
     probe_times = read_cache_probe_times(cache_path)
 
     cache_figure, cache_axis = plt.subplots(figsize=STANDALONE_FIGURE_SIZE)
-    draw_cache_gap(cache_axis, probe_times, visual_scale=1.22)
+    draw_cache_gap(cache_axis, probe_times, visual_scale=1.22, legend_y=1.10)
     cache_figure.subplots_adjust(bottom=0.18, left=0.14, right=0.98, top=0.90)
     cache_destinations = save_figure(
         cache_figure,

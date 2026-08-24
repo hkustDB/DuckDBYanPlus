@@ -51,6 +51,22 @@ The defaults are:
 Command-line options remain available when a machine differs from the experiment
 server. Use `--cpu-list none` to disable Linux CPU pinning, for example on macOS.
 
+To run only the eight LSQB q9 rewrites without executing its multi-hour
+`query.sql` original, use:
+
+```sh
+python3 robustness/run_experiment.py --only-query lsqb-q9 --rewrites-only
+```
+
+This still executes each rewrite once as an execution check, followed by the
+configured warm-up and ten measured repetitions. The rewrite validation rows
+are marked `unverified` because the original was intentionally skipped, but a
+rewrite-only run exits successfully when all selected rewrites execute and time
+successfully. Per-rewrite mean, median, standard deviation, and extrema are
+written to `plan_statistics.csv`. Baseline speedups and
+`robust_query_statistics.csv` require a measured or timed-out original from the
+same run and therefore are not claimed by this mode.
+
 Each repetition is a globally randomized block containing every valid original
 and rewrite plan. Every plan runs in a fresh DuckDB process and receives the
 same thread count and number of warm-ups. View declarations are converted to

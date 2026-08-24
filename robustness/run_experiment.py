@@ -219,6 +219,30 @@ def load_plans() -> list[Plan]:
     return plans
 
 
+def select_plans(
+    plans: list[Plan], query_labels: list[str], rewrites_only: bool
+) -> list[Plan]:
+    available = {f"{plan.suite}-{plan.query}" for plan in plans}
+    requested = set(query_labels)
+    unknown = sorted(requested - available)
+    if unknown:
+        raise ValueError(
+            "unknown --only-query value(s): "
+            + ", ".join(unknown)
+            + "; available values: "
+            + ", ".join(sorted(available))
+        )
+    selected = [
+        plan
+        for plan in plans
+        if (not requested or f"{plan.suite}-{plan.query}" in requested)
+        and (not rewrites_only or plan.kind == "rewrite")
+    ]
+    if not selected:
+        raise ValueError("plan selection is empty")
+    return selected
+
+
 def command_prefix(cpu_list: str | None) -> list[str]:
     if not cpu_list:
         return []
@@ -402,7 +426,7 @@ def write_metadata(
     executable: pathlib.Path,
     databases: dict[str, pathlib.Path],
     version: str,
-    plan_count: int,
+    plans: list[Plan],
 ) -> None:
     metadata = {
         "started_at_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -415,9 +439,14 @@ def write_metadata(
         "warmups_per_repetition": args.warmups,
         "random_seed": args.seed,
         "timeout_seconds": args.timeout,
+        "selected_queries": sorted(
+            {f"{plan.suite}-{plan.query}" for plan in plans}
+        ),
+        "rewrites_only": args.rewrites_only,
         "platform": platform.platform(),
         "logical_cpu_count": os.cpu_count(),
-        "plan_count_including_originals": plan_count,
+        "plan_count_including_originals": len(plans),
+        "selected_plan_count": len(plans),
         "manifest_sha256": sha256((ROOT / "manifest.tsv").read_bytes()),
         "timing_scope": "final SELECT; setup creates logical temporary views and is untimed",
         "execution_design": "one fresh DuckDB process per plan per repetition; globally shuffled blocks",
@@ -484,6 +513,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=20260822)
     parser.add_argument("--timeout", type=int, default=600, help="per-process seconds")
     parser.add_argument(
+        "--only-query",
+        action="append",
+        default=[],
+        metavar="SUITE-QUERY",
+        help="run only a query label such as lsqb-q9; may be repeated",
+    )
+    parser.add_argument(
+        "--rewrites-only",
+        action="store_true",
+        help="skip every query.sql original and run only rewrite plans",
+    )
+    parser.add_argument(
         "--output-dir", type=pathlib.Path, default=ROOT / "results" / timestamp
     )
     return parser.parse_args()
@@ -504,7 +545,13 @@ def main() -> int:
     if not executable.is_file() or not os.access(executable, os.X_OK):
         print(f"error: DuckDB executable is missing or not executable: {executable}", file=sys.stderr)
         return 2
-    for suite, database in databases.items():
+    try:
+        plans = select_plans(load_plans(), args.only_query, args.rewrites_only)
+    except (OSError, ValueError, UnicodeError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 2
+    for suite in sorted({plan.suite for plan in plans}):
+        database = databases[suite]
         if not database.is_file():
             print(f"error: {suite} database does not exist: {database}", file=sys.stderr)
             return 2
@@ -519,14 +566,18 @@ def main() -> int:
 
     try:
         prefix = command_prefix(args.cpu_list)
-        plans = load_plans()
         version = check_origin_binary(executable, prefix, args.timeout)
     except (OSError, ValueError, UnicodeError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
-    write_metadata(output_directory, args, executable, databases, version, len(plans))
+    write_metadata(output_directory, args, executable, databases, version, plans)
 
-    print(f"Validating exact results for {len(plans)} plans...")
+    validation_label = (
+        "Checking rewrite execution"
+        if args.rewrites_only
+        else "Validating exact results"
+    )
+    print(f"{validation_label} for {len(plans)} plans...")
     validation_rows, timing_eligible = validate_plans(
         plans,
         executable,
@@ -629,7 +680,8 @@ def main() -> int:
     ]
     summary = subprocess.run(summary_command, check=False)
     print(f"Results: {output_directory}")
-    if validation_failures or unverified_rewrites or failed_timing_plans or summary.returncode:
+    unexpected_unverified = 0 if args.rewrites_only else unverified_rewrites
+    if validation_failures or unexpected_unverified or failed_timing_plans or summary.returncode:
         print(
             f"Experiment incomplete: validation_failures={validation_failures}, "
             f"unverified_rewrites={unverified_rewrites}, "
@@ -637,6 +689,10 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
+    if unverified_rewrites:
+        print(
+            "Rewrite-only run complete; semantic comparison was intentionally skipped."
+        )
     return 0
 
 
