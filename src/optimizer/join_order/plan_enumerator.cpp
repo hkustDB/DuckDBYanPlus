@@ -813,8 +813,150 @@ static void CopyRelationSet(const JoinRelationSet &set, vector<idx_t> &target) {
 	}
 }
 
-bool PlanEnumerator::FindPlanDerivedGHDBoundary(const vector<idx_t> &cyclic_core,
-	                                             VirtualBagBoundary &result) const {
+static bool HyperedgesOverlap(const unordered_set<idx_t> &left, const unordered_set<idx_t> &right) {
+	for (auto vertex : left) {
+		if (right.find(vertex) != right.end()) {
+			return true;
+		}
+	}
+	return false;
+}
+
+bool PlanEnumerator::BuildTwoCyclicBagPlan(const vector<idx_t> &cyclic_core) {
+	// The exact annotation rewrite currently consumes one binary join tree. Keep
+	// non-core ears on the established native-DP/GHD path until they can be
+	// attached without hiding either cyclic bag behind an arbitrary DP subtree.
+	if (cyclic_core.size() != query_graph_manager.relation_manager.NumRelations() || cyclic_core.size() < 5) {
+		return false;
+	}
+
+	auto graph = BuildRelationalHypergraph();
+	if (graph.relations.size() != cyclic_core.size()) {
+		return false;
+	}
+
+	unordered_map<idx_t, idx_t> relation_position;
+	for (idx_t position = 0; position < graph.relation_indices.size(); position++) {
+		relation_position[graph.relation_indices[position]] = position;
+	}
+
+	auto component_is_cyclic = [&](const vector<idx_t> &component) {
+		RelationalHypergraph reduced;
+		for (auto relation_idx : component) {
+			auto position = relation_position.find(relation_idx);
+			if (position == relation_position.end()) {
+				return false;
+			}
+			reduced.relations.push_back(graph.relations[position->second]);
+			reduced.relation_indices.push_back(relation_idx);
+		}
+		while (reduced.relations.size() > 1) {
+			bool removed_ear = false;
+			for (idx_t relation_idx = 0; relation_idx < reduced.relations.size(); relation_idx++) {
+				if (!GetEarWitnesses(reduced, relation_idx).empty()) {
+					reduced.relations.erase_at(relation_idx);
+					reduced.relation_indices.erase_at(relation_idx);
+					removed_ear = true;
+					break;
+				}
+			}
+			if (!removed_ear) {
+				return true;
+			}
+		}
+		return false;
+	};
+
+	auto ordered_core = cyclic_core;
+	std::sort(ordered_core.begin(), ordered_core.end());
+	for (auto separator_idx : ordered_core) {
+		vector<idx_t> remaining;
+		for (auto relation_idx : ordered_core) {
+			if (relation_idx != separator_idx) {
+				remaining.push_back(relation_idx);
+			}
+		}
+
+		vector<vector<idx_t>> components;
+		unordered_set<idx_t> visited;
+		for (auto start : remaining) {
+			if (!visited.insert(start).second) {
+				continue;
+			}
+			vector<idx_t> component;
+			vector<idx_t> pending {start};
+			while (!pending.empty()) {
+				auto current = pending.back();
+				pending.pop_back();
+				component.push_back(current);
+				auto current_position = relation_position.find(current);
+				if (current_position == relation_position.end()) {
+					return false;
+				}
+				for (auto candidate : remaining) {
+					if (visited.find(candidate) != visited.end()) {
+						continue;
+					}
+					auto candidate_position = relation_position.find(candidate);
+					if (candidate_position != relation_position.end() &&
+					    HyperedgesOverlap(graph.relations[current_position->second],
+					                      graph.relations[candidate_position->second])) {
+						visited.insert(candidate);
+						pending.push_back(candidate);
+					}
+				}
+			}
+			std::sort(component.begin(), component.end());
+			components.push_back(std::move(component));
+		}
+
+		if (components.size() != 2 || !component_is_cyclic(components[0]) || !component_is_cyclic(components[1])) {
+			continue;
+		}
+		if (components[1][0] < components[0][0]) {
+			std::swap(components[0], components[1]);
+		}
+
+		unordered_set<idx_t> left_relations(components[0].begin(), components[0].end());
+		unordered_set<idx_t> right_relations(components[1].begin(), components[1].end());
+		auto &left_set = query_graph_manager.set_manager.GetJoinRelation(left_relations);
+		auto &right_set = query_graph_manager.set_manager.GetJoinRelation(right_relations);
+		auto &separator_set = query_graph_manager.set_manager.GetJoinRelation(separator_idx);
+		auto left_plan = plans.find(left_set);
+		auto right_plan = plans.find(right_set);
+		auto separator_plan = plans.find(separator_set);
+		if (left_plan == plans.end() || right_plan == plans.end() || separator_plan == plans.end()) {
+			continue;
+		}
+
+		auto separator_connections = query_graph.GetConnections(left_set, separator_set);
+		if (separator_connections.empty()) {
+			continue;
+		}
+		auto &left_with_separator = query_graph_manager.set_manager.Union(left_set, separator_set);
+		auto left_with_separator_plan =
+		    CreateJoinTree(left_with_separator, separator_connections, *left_plan->second, *separator_plan->second);
+		plans[left_with_separator] = std::move(left_with_separator_plan);
+
+		auto final_connections = query_graph.GetConnections(left_with_separator, right_set);
+		if (final_connections.empty()) {
+			continue;
+		}
+		auto final_left_plan = plans.find(left_with_separator);
+		auto final_right_plan = plans.find(right_set);
+		if (final_left_plan == plans.end() || final_right_plan == plans.end()) {
+			continue;
+		}
+		auto &total_set = query_graph_manager.set_manager.Union(left_with_separator, right_set);
+		auto total_plan =
+		    CreateJoinTree(total_set, final_connections, *final_left_plan->second, *final_right_plan->second);
+		plans[total_set] = std::move(total_plan);
+		return true;
+	}
+	return false;
+}
+
+bool PlanEnumerator::FindPlanDerivedGHDBoundary(const vector<idx_t> &cyclic_core, VirtualBagBoundary &result) const {
 	if (cyclic_core.size() < 2) {
 		return false;
 	}

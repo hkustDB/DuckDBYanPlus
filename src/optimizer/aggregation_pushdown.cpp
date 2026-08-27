@@ -10,6 +10,7 @@
 
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
+#include "duckdb/planner/expression/bound_comparison_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_operator_expression.hpp"
 #include "duckdb/function/scalar_function.hpp"
@@ -121,12 +122,237 @@ unique_ptr<LogicalOperator> AggregationPushdown::ApplyAgg(unique_ptr<LogicalOper
         StoreMinMaxAggregates(op->children[0].get());
     } else if (query_type == QueryType::SUM) {
         StoreSumAggregates(op->children[0].get());
-    } else if (query_type == QueryType::SELECT_DISTINCT) {
-        StoreDistinctAggregates(op.get());
-    }
-    op = AddAnnotAttributeDFS(std::move(op), true);
-    op = ReplaceRootCountWithSum(std::move(op));
-    return op;
+	} else if (query_type == QueryType::SELECT_DISTINCT) {
+		StoreDistinctAggregates(op.get());
+	}
+	op = AddAnnotAttributeDFS(std::move(op), true);
+	op = ReplaceRootCountWithSum(std::move(op));
+	return op;
+}
+
+static idx_t CountYanplusRelations(const LogicalOperator &op) {
+	if (op.type == LogicalOperatorType::LOGICAL_GET) {
+		return 1;
+	}
+	idx_t result = 0;
+	for (auto &child : op.children) {
+		result += CountYanplusRelations(*child);
+	}
+	return result;
+}
+
+static bool HasYanplusBinding(const vector<ColumnBinding> &bindings, const ColumnBinding &binding) {
+	return std::find(bindings.begin(), bindings.end(), binding) != bindings.end();
+}
+
+static void CollectYanplusEqualityBindings(const LogicalOperator &op,
+                                           vector<pair<ColumnBinding, ColumnBinding>> &equalities) {
+	if (op.type == LogicalOperatorType::LOGICAL_COMPARISON_JOIN) {
+		auto &join = op.Cast<LogicalComparisonJoin>();
+		for (auto &condition : join.conditions) {
+			if (condition.comparison == ExpressionType::COMPARE_EQUAL &&
+			    condition.left->GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF &&
+			    condition.right->GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF) {
+				equalities.emplace_back(condition.left->Cast<BoundColumnRefExpression>().binding,
+				                        condition.right->Cast<BoundColumnRefExpression>().binding);
+			}
+		}
+	} else if (op.type == LogicalOperatorType::LOGICAL_FILTER) {
+		for (auto &expression : op.expressions) {
+			if (expression->type == ExpressionType::COMPARE_EQUAL &&
+			    expression->GetExpressionClass() == ExpressionClass::BOUND_COMPARISON) {
+				auto &comparison = expression->Cast<BoundComparisonExpression>();
+				if (comparison.left->GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF &&
+				    comparison.right->GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF) {
+					equalities.emplace_back(comparison.left->Cast<BoundColumnRefExpression>().binding,
+					                        comparison.right->Cast<BoundColumnRefExpression>().binding);
+				}
+			}
+		}
+	}
+	for (auto &child : op.children) {
+		CollectYanplusEqualityBindings(*child, equalities);
+	}
+}
+
+static vector<ColumnBinding> YanplusEquivalentBindings(const ColumnBinding &start,
+                                                       const vector<pair<ColumnBinding, ColumnBinding>> &equalities) {
+	vector<ColumnBinding> result {start};
+	for (idx_t position = 0; position < result.size(); position++) {
+		for (auto &equality : equalities) {
+			ColumnBinding candidate;
+			if (equality.first == result[position]) {
+				candidate = equality.second;
+			} else if (equality.second == result[position]) {
+				candidate = equality.first;
+			} else {
+				continue;
+			}
+			if (!HasYanplusBinding(result, candidate)) {
+				result.push_back(candidate);
+			}
+		}
+	}
+	return result;
+}
+
+static vector<ColumnBinding> YanplusBoundaryBindingsForChild(LogicalOperator &root, LogicalOperator &child) {
+	vector<ColumnBinding> result;
+	auto child_bindings = child.GetColumnBindings();
+	vector<pair<ColumnBinding, ColumnBinding>> equalities;
+	CollectYanplusEqualityBindings(root, equalities);
+	for (auto &equality : equalities) {
+		auto left_binding = equality.first;
+		auto right_binding = equality.second;
+		auto left_in_child = HasYanplusBinding(child_bindings, left_binding);
+		auto right_in_child = HasYanplusBinding(child_bindings, right_binding);
+		if (left_in_child == right_in_child) {
+			continue;
+		}
+		auto binding = left_in_child ? left_binding : right_binding;
+		bool equivalent_to_existing = false;
+		for (auto &existing : result) {
+			if (HasYanplusBinding(YanplusEquivalentBindings(existing, equalities), binding)) {
+				equivalent_to_existing = true;
+				break;
+			}
+		}
+		if (!equivalent_to_existing) {
+			result.push_back(binding);
+		}
+	}
+	return result;
+}
+
+unique_ptr<LogicalOperator> AggregationPushdown::PropagateCountAnnotations(unique_ptr<LogicalOperator> op) {
+	if (!op) {
+		return op;
+	}
+	for (auto &child : op->children) {
+		child = PropagateCountAnnotations(std::move(child));
+	}
+	if (op->type != LogicalOperatorType::LOGICAL_COMPARISON_JOIN) {
+		return op;
+	}
+
+	auto &join = op->Cast<LogicalComparisonJoin>();
+	ColumnBinding left_annot;
+	ColumnBinding right_annot;
+	LogicalType left_type;
+	LogicalType right_type;
+	if (!FindAnnotAttribute(join.children[0].get(), left_annot, left_type) ||
+	    !FindAnnotAttribute(join.children[1].get(), right_annot, right_type)) {
+		// A one-sided annotation is already part of the comparison join output.
+		return op;
+	}
+
+	vector<unique_ptr<Expression>> factors;
+	factors.push_back(make_uniq<BoundColumnRefExpression>(left_type, left_annot));
+	factors.push_back(make_uniq<BoundColumnRefExpression>(right_type, right_annot));
+	FunctionBinder function_binder(context);
+	ErrorData error;
+	auto product = function_binder.BindScalarFunction(DEFAULT_SCHEMA, "*", std::move(factors), error, true, nullptr);
+	if (!product) {
+		throw Exception(ExceptionType::BINDER, "Failed to bind two-bag annotation multiplication: " + error.Message());
+	}
+	return AddProjectionWithAnnot(std::move(op), std::move(product), "annot", {left_annot, right_annot});
+}
+
+unique_ptr<LogicalOperator> AggregationPushdown::ApplyTwoCyclicBagCount(unique_ptr<LogicalOperator> op) {
+	if (query_type != QueryType::COUNT_STAR || !IsSupportedRootShape(op.get())) {
+		return op;
+	}
+
+	auto &root_aggregate = op->children[0]->Cast<LogicalAggregate>();
+	auto &body = root_aggregate.children[0];
+	if (body->type != LogicalOperatorType::LOGICAL_COMPARISON_JOIN) {
+		return op;
+	}
+	auto &top_join = body->Cast<LogicalComparisonJoin>();
+	if (top_join.join_type != JoinType::INNER || top_join.children.size() != 2) {
+		return op;
+	}
+
+	idx_t bridge_side = DConstants::INVALID_INDEX;
+	idx_t bridge_bag_side = DConstants::INVALID_INDEX;
+	for (idx_t candidate_side = 0; candidate_side < 2; candidate_side++) {
+		auto direct_bag_side = 1 - candidate_side;
+		if (CountYanplusRelations(*top_join.children[direct_bag_side]) < 3 ||
+		    top_join.children[candidate_side]->type != LogicalOperatorType::LOGICAL_COMPARISON_JOIN) {
+			continue;
+		}
+		auto &candidate_join = top_join.children[candidate_side]->Cast<LogicalComparisonJoin>();
+		if (candidate_join.join_type != JoinType::INNER || candidate_join.children.size() != 2) {
+			continue;
+		}
+		auto left_count = CountYanplusRelations(*candidate_join.children[0]);
+		auto right_count = CountYanplusRelations(*candidate_join.children[1]);
+		if (left_count >= 3 && right_count == 1) {
+			bridge_side = candidate_side;
+			bridge_bag_side = 0;
+			break;
+		}
+		if (right_count >= 3 && left_count == 1) {
+			bridge_side = candidate_side;
+			bridge_bag_side = 1;
+			break;
+		}
+	}
+	if (bridge_side == DConstants::INVALID_INDEX) {
+		return op;
+	}
+
+	auto direct_bag_side = 1 - bridge_side;
+	auto &bridge_join = top_join.children[bridge_side]->Cast<LogicalComparisonJoin>();
+	auto bridge_groups = YanplusBoundaryBindingsForChild(*body, *bridge_join.children[bridge_bag_side]);
+	auto direct_groups = YanplusBoundaryBindingsForChild(*body, *top_join.children[direct_bag_side]);
+	// The currently supported two-bag GHD has one endpoint of the bridge in
+	// each cyclic bag. Keep other separator widths on the conservative path.
+	if (bridge_groups.size() != 1 || direct_groups.size() != 1) {
+		return op;
+	}
+	vector<pair<ColumnBinding, ColumnBinding>> equalities;
+	CollectYanplusEqualityBindings(*body, equalities);
+	auto bridge_equivalents = YanplusEquivalentBindings(bridge_groups[0], equalities);
+	auto direct_equivalents = YanplusEquivalentBindings(direct_groups[0], equalities);
+
+	global_binding_map.clear();
+	minmax_columns.clear();
+	sum_aggregates.clear();
+	groupby_columns.clear();
+	alias_set.clear();
+
+	auto bridge_child_bindings = bridge_join.children[bridge_bag_side]->GetColumnBindings();
+	bridge_join.children[bridge_bag_side] =
+	    CreateDynamicAggregate(std::move(bridge_join.children[bridge_bag_side]), &bridge_groups);
+	auto bridge_output_bindings = bridge_join.children[bridge_bag_side]->GetColumnBindings();
+	if (bridge_output_bindings.empty()) {
+		return op;
+	}
+	for (auto &binding : bridge_equivalents) {
+		if (HasYanplusBinding(bridge_child_bindings, binding)) {
+			UpdateBindingMap(binding, bridge_output_bindings[0]);
+		}
+	}
+	UpdateJoinConditions(bridge_join);
+	bridge_join.ResolveOperatorTypes();
+	auto direct_child_bindings = top_join.children[direct_bag_side]->GetColumnBindings();
+	top_join.children[direct_bag_side] =
+	    CreateDynamicAggregate(std::move(top_join.children[direct_bag_side]), &direct_groups);
+	auto direct_output_bindings = top_join.children[direct_bag_side]->GetColumnBindings();
+	if (direct_output_bindings.empty()) {
+		return op;
+	}
+	for (auto &binding : direct_equivalents) {
+		if (HasYanplusBinding(direct_child_bindings, binding)) {
+			UpdateBindingMap(binding, direct_output_bindings[0]);
+		}
+	}
+	UpdateJoinConditions(top_join);
+	top_join.ResolveOperatorTypes();
+	body = PropagateCountAnnotations(std::move(body));
+	op = ReplaceRootCountWithSum(std::move(op));
+	return op;
 }
 
 // Part2
@@ -135,8 +361,8 @@ unique_ptr<LogicalOperator> AggregationPushdown::UpdateBinding(unique_ptr<Logica
 	// from a previous pass can apply the same projection remap twice.
 	global_binding_map.clear();
 	op = PruneAggregation(std::move(op), &AggregationPushdown::PruneAggregationWithProjectionMap);
-    op = UpdateAnnotMul(std::move(op));
-    return op;
+	op = UpdateAnnotMul(std::move(op));
+	return op;
 }
 
 bool AggregationPushdown::IsSupportedRootShape(const LogicalOperator* op) const {
@@ -1144,49 +1370,48 @@ void AggregationPushdown::GetAnnotColumnBindingsIdx(LogicalOperator* op, vector<
                 annot_indices.push_back(agg.groups.size() + i);
             }
         }
-    }
-    else if (!op->children.empty()) {
-        // For other operators, recursively check children
-        for (auto& child : op->children) {
-            GetAnnotColumnBindingsIdx(child.get(), annot_indices);
-        }
-    }
+	} else if (!op->children.empty()) {
+		// For other operators, recursively check children
+		for (auto &child : op->children) {
+			GetAnnotColumnBindingsIdx(child.get(), annot_indices);
+		}
+	}
 }
 
 // Helper to add a projection with annot expression, both annot1 * annot2 and annot
-unique_ptr<LogicalOperator> AggregationPushdown::AddProjectionWithAnnot(unique_ptr<LogicalOperator> op, unique_ptr<Expression> annot_expr, string name, vector<ColumnBinding> bindings_to_exclude) {
-    // Get bindings from operator
-    auto bindings = op->GetColumnBindings();
-    
-    // Create expressions for projection
-    vector<unique_ptr<Expression>> projection_expressions;
+unique_ptr<LogicalOperator> AggregationPushdown::AddProjectionWithAnnot(unique_ptr<LogicalOperator> op,
+                                                                        unique_ptr<Expression> annot_expr, string name,
+                                                                        vector<ColumnBinding> bindings_to_exclude) {
+	// Get bindings from operator
+	op->ResolveOperatorTypes();
+	auto bindings = op->GetColumnBindings();
 
-    // Create and return the projection
-    idx_t projection_index = binder.GenerateTableIndex();
-    
-    // Add all existing columns
-    for (idx_t i = 0; i < bindings.size(); i++) {
-        bool should_exclude = false;
-        for (const auto& exclude_binding : bindings_to_exclude) {
-            if (bindings[i] == exclude_binding) {
-                should_exclude = true;
-                break;
-            }
-        }
-        
-        if (should_exclude) {
-            continue;  // Skip this binding
-        }
-        auto col_ref = make_uniq<BoundColumnRefExpression>(
-            op->types[i],
-            bindings[i]
-        );
-        // NOTE: minmax_aggregate, we need to add all annot columns
+	// Create expressions for projection
+	vector<unique_ptr<Expression>> projection_expressions;
+
+	// Create and return the projection
+	idx_t projection_index = binder.GenerateTableIndex();
+
+	// Add all existing columns
+	for (idx_t i = 0; i < bindings.size(); i++) {
+		bool should_exclude = false;
+		for (const auto &exclude_binding : bindings_to_exclude) {
+			if (bindings[i] == exclude_binding) {
+				should_exclude = true;
+				break;
+			}
+		}
+
+		if (should_exclude) {
+			continue; // Skip this binding
+		}
+		auto col_ref = make_uniq<BoundColumnRefExpression>(op->types[i], bindings[i]);
+		// NOTE: minmax_aggregate, we need to add all annot columns
         projection_expressions.push_back(std::move(col_ref));
         UpdateBindingMap(bindings[i], ColumnBinding(projection_index, projection_expressions.size()-1));
-    }
-    
-    // Then add the annot expression
+	}
+
+	// Then add the annot expression
     if (annot_expr) {
         annot_expr->alias = name;
         if (annot_expr->GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF) {
@@ -1314,33 +1539,31 @@ unique_ptr<LogicalOperator> AggregationPushdown::AddProjectionWithAnnot(unique_p
     projection->ResolveOperatorTypes();
     if (query_type == QueryType::SUM) {
         UpdateSum();
-    } else if (query_type == QueryType::MINMAX_AGGREGATE) {
-        UpdateMinMax();
-    }
+	} else if (query_type == QueryType::MINMAX_AGGREGATE) {
+		UpdateMinMax();
+	}
 
-    // Return the new projection
-    return projection;
+	// Return the new projection
+	return projection;
 }
 
-unique_ptr<LogicalOperator> AggregationPushdown::CreateDynamicAggregate(unique_ptr<LogicalOperator> child_node) {
-    // std::cout << "CreateDynamicAggregate" << std::endl;
-    // child_node->Print();
-    vector<ColumnBinding> child_bindings = child_node->GetColumnBindings();
-    child_node->ResolveOperatorTypes();
-    vector<LogicalType> child_types = child_node->types;
+unique_ptr<LogicalOperator> AggregationPushdown::CreateDynamicAggregate(unique_ptr<LogicalOperator> child_node,
+                                                                        const vector<ColumnBinding> *group_bindings) {
+	// std::cout << "CreateDynamicAggregate" << std::endl;
+	// child_node->Print();
+	vector<ColumnBinding> child_bindings = child_node->GetColumnBindings();
+	child_node->ResolveOperatorTypes();
+	vector<LogicalType> child_types = child_node->types;
 
-    // Do process for distinct at the beginning
-    if (query_type == QueryType::SELECT_DISTINCT) {
-        vector<unique_ptr<Expression>> distinct_targets;
-        for (idx_t i = 0; i < child_bindings.size(); i++) {
-            auto col_ref = make_uniq<BoundColumnRefExpression>(
-                child_types[i],
-                child_bindings[i]
-            );
-            distinct_targets.push_back(std::move(col_ref));
-        }
+	// Do process for distinct at the beginning
+	if (query_type == QueryType::SELECT_DISTINCT) {
+		vector<unique_ptr<Expression>> distinct_targets;
+		for (idx_t i = 0; i < child_bindings.size(); i++) {
+			auto col_ref = make_uniq<BoundColumnRefExpression>(child_types[i], child_bindings[i]);
+			distinct_targets.push_back(std::move(col_ref));
+		}
 
-        auto distinct = make_uniq<LogicalDistinct>(std::move(distinct_targets), DistinctType::DISTINCT);
+		auto distinct = make_uniq<LogicalDistinct>(std::move(distinct_targets), DistinctType::DISTINCT);
     
         // Add child node
         distinct->AddChild(std::move(child_node));
@@ -1349,9 +1572,9 @@ unique_ptr<LogicalOperator> AggregationPushdown::CreateDynamicAggregate(unique_p
         distinct->ResolveOperatorTypes();
     
         return std::move(distinct);
-    }
-    
-    // NOTE: Store aggregation result corresponding column index, but for sum aggregation with multiple columns, we didnot consoder all invloving columns
+	}
+
+	// NOTE: Store aggregation result corresponding column index, but for sum aggregation with multiple columns, we didnot consoder all invloving columns
     // count: annot, min/max: min/max, sum: sum result (not consist involve columns)
     vector<idx_t> annot_indices;
     vector<idx_t> sum_involve_columns;
@@ -1452,52 +1675,46 @@ unique_ptr<LogicalOperator> AggregationPushdown::CreateDynamicAggregate(unique_p
                 child_bindings[annot_idx]
             );
             sum_args.push_back(std::move(annot_col_ref));
-            
-            AggregateFunction sum_function = GetSumAggregate(context, child_types[annot_idx]);
-            if (sum_function.name.empty()) {
-                sum_function.name = "sum";
-            }
-            // sum_function.return_type = LogicalType::BIGINT;
-            FunctionBinder function_binder(context);
-            auto sum_expr = function_binder.BindAggregateFunction(
-                sum_function, 
-                std::move(sum_args), 
-                nullptr, 
-                AggregateType::NON_DISTINCT
-            );
-            // Get original alias for marking it is annot of sum alias
-            sum_expr->alias = GetColumnName(child_node.get(), annot_idx);
-            select_list.push_back(std::move(sum_expr));
-            UpdateBindingMap(child_bindings[annot_idx], ColumnBinding(aggregate_index, agg_pos++));
-        }
-        // No annot will occur in distict operator
-    } else {
-        if (query_type == QueryType::COUNT_STAR) {
-            auto count_star_fun = CountStarFun::GetFunction();
-            if (count_star_fun.name.empty()) {
-                count_star_fun.name = "count_star";
-            }
-            FunctionBinder function_binder(context);
-            auto count_star = function_binder.BindAggregateFunction(
-                count_star_fun, 
-                {}, 
-                nullptr, 
-                AggregateType::NON_DISTINCT
-            );
-            select_list.push_back(std::move(count_star));
-        } else if (query_type == QueryType::MINMAX_AGGREGATE) {
-            for (idx_t i = 0; i < child_bindings.size(); i++) {
-                for (const auto& info : minmax_columns) {
-                    if (info.binding == child_bindings[i]) {
-                        vector<unique_ptr<Expression>> sum_args;
 
-                        annot_indices.push_back(i);
-                        auto annot_col_ref = make_uniq<BoundColumnRefExpression>(child_types[i], child_bindings[i]);
-                        FunctionBinder function_binder(context);
-                        
-                        sum_args.push_back(std::move(annot_col_ref));
+			AggregateFunction sum_function = GetSumAggregate(context, child_types[annot_idx]);
+			if (sum_function.name.empty()) {
+				sum_function.name = "sum";
+			}
+			// sum_function.return_type = LogicalType::BIGINT;
+			FunctionBinder function_binder(context);
+			auto sum_expr = function_binder.BindAggregateFunction(sum_function, std::move(sum_args), nullptr,
+			                                                      AggregateType::NON_DISTINCT);
+			// Get original alias for marking it is annot of sum alias
+			sum_expr->alias = query_type == QueryType::COUNT_STAR ? "YANPLUS_AGG_PUSHDOWN"
+			                                                      : GetColumnName(child_node.get(), annot_idx);
+			select_list.push_back(std::move(sum_expr));
+			UpdateBindingMap(child_bindings[annot_idx], ColumnBinding(aggregate_index, agg_pos++));
+		}
+		// No annot will occur in distict operator
+	} else {
+		if (query_type == QueryType::COUNT_STAR) {
+			auto count_star_fun = CountStarFun::GetFunction();
+			if (count_star_fun.name.empty()) {
+				count_star_fun.name = "count_star";
+			}
+			FunctionBinder function_binder(context);
+			auto count_star =
+			    function_binder.BindAggregateFunction(count_star_fun, {}, nullptr, AggregateType::NON_DISTINCT);
+			count_star->alias = "YANPLUS_AGG_PUSHDOWN";
+			select_list.push_back(std::move(count_star));
+		} else if (query_type == QueryType::MINMAX_AGGREGATE) {
+			for (idx_t i = 0; i < child_bindings.size(); i++) {
+				for (const auto &info : minmax_columns) {
+					if (info.binding == child_bindings[i]) {
+						vector<unique_ptr<Expression>> sum_args;
 
-                        if (info.function_name == "min") {
+						annot_indices.push_back(i);
+						auto annot_col_ref = make_uniq<BoundColumnRefExpression>(child_types[i], child_bindings[i]);
+						FunctionBinder function_binder(context);
+
+						sum_args.push_back(std::move(annot_col_ref));
+
+						if (info.function_name == "min") {
                             auto agg_function = GetMinAggregate(context, child_types[i]);
                             auto agg_expr = function_binder.BindAggregateFunction(
                                 agg_function, 
@@ -1518,11 +1735,11 @@ unique_ptr<LogicalOperator> AggregationPushdown::CreateDynamicAggregate(unique_p
                             select_list.push_back(std::move(agg_expr));
                         }
                         UpdateBindingMap(child_bindings[i], ColumnBinding(aggregate_index, agg_pos++));
-                    }
-                }
-            }
-        } else if (query_type == QueryType::SUM) {
-            // TODO: 
+					}
+				}
+			}
+		} else if (query_type == QueryType::SUM) {
+			// TODO:
             for (const auto& sum_info: sum_aggregates) {
                 bool all_columns_exist = true;
                 bool no_columns_exist = true;
@@ -1590,52 +1807,53 @@ unique_ptr<LogicalOperator> AggregationPushdown::CreateDynamicAggregate(unique_p
                     throw NotImplementedException(
                         "AggregationPushdown::CreateDynamicAggregate: SUM with not the same node columns"
                     );
-                }
-            }
-        }
-    }
-    
-    // Create the LogicalAggregate
-    auto aggregate = make_uniq<LogicalAggregate>(group_index, aggregate_index, std::move(select_list));
+				}
+			}
+		}
+	}
 
-    int group_pos = 0;
-    for (idx_t i = 0; i < child_bindings.size(); i++) {
-        // Skip any annotation columns for grouping
-        bool is_annot_column = false;
-        if (annot_indices.size() > 0) {
-            for (const auto& annot_idx : annot_indices) {
-                if (i == annot_idx) {
-                    is_annot_column = true;
-                    break;
-                }
-            }
-        } else if (annot_indices.size() == 0 && sum_involve_columns.size() > 0) {
-            // If no annot columns, check if this is a sum involved column
-            for (const auto& sum_idx : sum_involve_columns) {
-                if (i == sum_idx) {
-                    is_annot_column = true;
-                    break;
-                }
-            }
-        }
-        
-        if (is_annot_column) {
-            continue; // Skip this column for grouping
-        }
-        
-        // Create GROUP BY expression for this column
-        auto col_type = child_types[i];
-        
-        auto group_expr = make_uniq<BoundColumnRefExpression>(
-            col_type,
-            child_bindings[i]
-        );
-        
-        aggregate->groups.push_back(std::move(group_expr));
-        UpdateBindingMap(child_bindings[i], ColumnBinding(group_index, group_pos++));
-    }
-    
-    // Create a single grouping set with all group columns
+	// Create the LogicalAggregate
+	auto aggregate = make_uniq<LogicalAggregate>(group_index, aggregate_index, std::move(select_list));
+
+	int group_pos = 0;
+	for (idx_t i = 0; i < child_bindings.size(); i++) {
+		// Skip any annotation columns for grouping
+		bool is_annot_column = false;
+		if (annot_indices.size() > 0) {
+			for (const auto &annot_idx : annot_indices) {
+				if (i == annot_idx) {
+					is_annot_column = true;
+					break;
+				}
+			}
+		} else if (annot_indices.size() == 0 && sum_involve_columns.size() > 0) {
+			// If no annot columns, check if this is a sum involved column
+			for (const auto &sum_idx : sum_involve_columns) {
+				if (i == sum_idx) {
+					is_annot_column = true;
+					break;
+				}
+			}
+		}
+
+		if (is_annot_column) {
+			continue; // Skip this column for grouping
+		}
+		if (group_bindings &&
+		    std::find(group_bindings->begin(), group_bindings->end(), child_bindings[i]) == group_bindings->end()) {
+			continue;
+		}
+
+		// Create GROUP BY expression for this column
+		auto col_type = child_types[i];
+
+		auto group_expr = make_uniq<BoundColumnRefExpression>(col_type, child_bindings[i]);
+
+		aggregate->groups.push_back(std::move(group_expr));
+		UpdateBindingMap(child_bindings[i], ColumnBinding(group_index, group_pos++));
+	}
+
+	// Create a single grouping set with all group columns
     if (!aggregate->groups.empty()) {
         GroupingSet grouping_set;
         for (idx_t i = 0; i < aggregate->groups.size(); i++) {
@@ -2298,42 +2516,40 @@ unique_ptr<LogicalOperator> AggregationPushdown::PruneAggregationWithProjectionM
     
     agg.ResolveOperatorTypes();
     top_proj.ResolveOperatorTypes();
-    
-    return std::move(op);
+
+	return std::move(op);
 }
 
-bool AggregationPushdown::AggPruneRules(unique_ptr<LogicalOperator>& op) {
-    // Check if this is an aggregate operator
-    if (op->type == LogicalOperatorType::LOGICAL_PROJECTION && 
-        op->children.size() == 1 &&
-        op->children[0]->type == LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY) {
-    
-        auto &agg = op->children[0]->Cast<LogicalAggregate>();
+bool AggregationPushdown::AggPruneRules(unique_ptr<LogicalOperator> &op) {
+	// Check if this is an aggregate operator
+	if (op->type == LogicalOperatorType::LOGICAL_PROJECTION && op->children.size() == 1 &&
+	    op->children[0]->type == LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY) {
+		auto &agg = op->children[0]->Cast<LogicalAggregate>();
 
-        /* FIX: PAUSE NOW
-        if (agg.children.size() > 0) {
-            idx_t child_cardinality = agg.children[0]->estimated_cardinality; 
-            idx_t agg_cardinality = agg.estimated_cardinality;
-            if (agg_cardinality > 0) {
-                double reduction_ratio = static_cast<double>(child_cardinality) / static_cast<double>(agg_cardinality);
-                
-                if (reduction_ratio <= 1.1) {
-                    return false;
-                }
-            }
-        }
-        */
-        
-        if (agg.groups.size() <= GROUP_BY_NUM) {
+		/* FIX: PAUSE NOW
+		if (agg.children.size() > 0) {
+		    idx_t child_cardinality = agg.children[0]->estimated_cardinality;
+		    idx_t agg_cardinality = agg.estimated_cardinality;
+		    if (agg_cardinality > 0) {
+		        double reduction_ratio = static_cast<double>(child_cardinality) / static_cast<double>(agg_cardinality);
+
+		        if (reduction_ratio <= 1.1) {
+		            return false;
+		        }
+		    }
+		}
+		*/
+
+		if (agg.groups.size() <= GROUP_BY_NUM) {
             return true;
         }
-    } else if (op->type == LogicalOperatorType::LOGICAL_DISTINCT) {
-        auto &distinct = op->Cast<LogicalDistinct>();
+	} else if (op->type == LogicalOperatorType::LOGICAL_DISTINCT) {
+		auto &distinct = op->Cast<LogicalDistinct>();
         if (distinct.distinct_targets.size() <= GROUP_BY_NUM) {
             return true;
         }
-    }
-    return false;
+	}
+	return false;
 }
 
 void AggregationPushdown::RecordAggPushdown(unique_ptr<LogicalOperator>& op) {

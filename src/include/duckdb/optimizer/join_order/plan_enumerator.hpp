@@ -76,6 +76,12 @@ public:
 	//! both contain relations from the cyclic core.
 	bool FindPlanDerivedGHDBoundary(const vector<idx_t> &cyclic_core, VirtualBagBoundary &result) const;
 
+	//! Replace the final native-DP tree with a separator-aligned tree when the
+	//! cyclic core consists of two cyclic components joined by one relation.
+	//! This exposes both bags as complete subtrees so exact COUNT annotation
+	//! aggregation can be applied below the separator joins.
+	bool BuildTwoCyclicBagPlan(const vector<idx_t> &cyclic_core);
+
 	//! Kept for compatibility with the Yan+ optimizer entry point. GYO no
 	//! longer inspects the wrapper operators around the join tree.
 	LogicalOperator *root_op = nullptr;

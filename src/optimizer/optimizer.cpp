@@ -505,6 +505,7 @@ void Optimizer::RunBuiltInOptimizers() {
 	                       IsYanplusEligible(plan.get(), query_type);
 	bool yanplus_cyclic_query = false;
 	bool yanplus_decomposable_count = false;
+	bool yanplus_two_cyclic_bag_plan = false;
 	if (yanplus_enabled && query_type == QueryType::COUNT_STAR) {
 		auto count_body = GetYanplusQueryBody(plan.get());
 		yanplus_decomposable_count = count_body && HasYanplusJoinSeparator(*count_body);
@@ -517,10 +518,11 @@ void Optimizer::RunBuiltInOptimizers() {
 			// have a bridge between cyclic components and use the exact annotation
 			// rewrite over the selected native-DP fallback. A single cyclic core
 			// retains its established semi-join-filter path (LSQB Q2).
-			JoinOrderOptimizer optimizer(context, true, !yanplus_decomposable_count);
+			JoinOrderOptimizer optimizer(context, true, !yanplus_decomposable_count, yanplus_decomposable_count);
 			vector<LogicalOperator *> empty_filter_order;
 			plan = optimizer.CallSolveJoinOrderFixed(std::move(plan), empty_filter_order);
 			yanplus_cyclic_query = optimizer.DetectedCyclicQuery();
+			yanplus_two_cyclic_bag_plan = optimizer.SelectedTwoCyclicBagPlan();
 		} else {
 			JoinOrderOptimizer optimizer(context);
 			plan = optimizer.Optimize(std::move(plan));
@@ -553,8 +555,11 @@ void Optimizer::RunBuiltInOptimizers() {
 				});
 				plan = predicate_transfer.Optimize(std::move(plan));
 			}
-		} else if ((!yanplus_cyclic_query ||
-		            (query_type == QueryType::COUNT_STAR && yanplus_decomposable_count)) &&
+		} else if (query_type == QueryType::COUNT_STAR && yanplus_two_cyclic_bag_plan) {
+			AggregationPushdown aggregation_pushdown(binder, context, query_type);
+			RunOptimizer(OptimizerType::AGGREGATION_PUSHDOWN,
+			             [&]() { plan = aggregation_pushdown.ApplyTwoCyclicBagCount(std::move(plan)); });
+		} else if ((!yanplus_cyclic_query || (query_type == QueryType::COUNT_STAR && yanplus_decomposable_count)) &&
 		           (query_type == QueryType::COUNT_STAR || query_type == QueryType::MINMAX_AGGREGATE ||
 		            query_type == QueryType::SUM || query_type == QueryType::SELECT_DISTINCT)) {
 			// Cyclic COUNT queries deliberately omit CREATE_BF/USE_BF above, so

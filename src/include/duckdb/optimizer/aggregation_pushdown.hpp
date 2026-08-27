@@ -112,38 +112,48 @@ public:
         global_binding_map.clear();
     }
 
-// 1. Main Function
+	// 1. Main Function
 
-    unique_ptr<LogicalOperator> Rewrite(unique_ptr<LogicalOperator> op);
+	unique_ptr<LogicalOperator> Rewrite(unique_ptr<LogicalOperator> op);
 
-    unique_ptr<LogicalOperator> ApplyAgg(unique_ptr<LogicalOperator> op);
+	unique_ptr<LogicalOperator> ApplyAgg(unique_ptr<LogicalOperator> op);
 
-    unique_ptr<LogicalOperator> UpdateBinding(unique_ptr<LogicalOperator> op);
+	//! Apply the exact two-bag COUNT rewrite selected for decomposable cyclic
+	//! plans. Unlike the generic heuristic, this aggregates both complete
+	//! cyclic bags on their separator keys.
+	unique_ptr<LogicalOperator> ApplyTwoCyclicBagCount(unique_ptr<LogicalOperator> op);
 
-    void StoreMinMaxAggregates(LogicalOperator* op);
+	unique_ptr<LogicalOperator> UpdateBinding(unique_ptr<LogicalOperator> op);
 
-    void StoreSumAggregates(LogicalOperator* op);
+	void StoreMinMaxAggregates(LogicalOperator *op);
 
-    void StoreDistinctAggregates(LogicalOperator* op);
+	void StoreSumAggregates(LogicalOperator *op);
 
-    unique_ptr<LogicalOperator> ReplaceRootCountWithSum(unique_ptr<LogicalOperator> op_node);
+	void StoreDistinctAggregates(LogicalOperator *op);
 
-    unique_ptr<LogicalOperator> AddAnnotAttributeDFS(unique_ptr<LogicalOperator> op_node, bool applyFlag = false);
+	unique_ptr<LogicalOperator> ReplaceRootCountWithSum(unique_ptr<LogicalOperator> op_node);
 
-    unique_ptr<LogicalOperator> AddProjectionWithAnnot(unique_ptr<LogicalOperator> op, unique_ptr<Expression> annot_expr, string name, vector<ColumnBinding> bindings_to_exclude);
-    unique_ptr<LogicalOperator> AddProjectionWithAnnot(unique_ptr<LogicalOperator> op, vector<unique_ptr<Expression>> annot_exprs, string name, vector<ColumnBinding> bindings_to_exclude);
+	unique_ptr<LogicalOperator> AddAnnotAttributeDFS(unique_ptr<LogicalOperator> op_node, bool applyFlag = false);
 
-    unique_ptr<LogicalOperator> CreateDynamicAggregate(unique_ptr<LogicalOperator> child_node);
+	unique_ptr<LogicalOperator> AddProjectionWithAnnot(unique_ptr<LogicalOperator> op,
+	                                                   unique_ptr<Expression> annot_expr, string name,
+	                                                   vector<ColumnBinding> bindings_to_exclude);
+	unique_ptr<LogicalOperator> AddProjectionWithAnnot(unique_ptr<LogicalOperator> op,
+	                                                   vector<unique_ptr<Expression>> annot_exprs, string name,
+	                                                   vector<ColumnBinding> bindings_to_exclude);
 
-// 2. Annot Tool Function
+	unique_ptr<LogicalOperator> CreateDynamicAggregate(unique_ptr<LogicalOperator> child_node,
+	                                                   const vector<ColumnBinding> *group_bindings = nullptr);
 
-    void UpdateMinMax();
+	// 2. Annot Tool Function
 
-    void UpdateSum();
+	void UpdateMinMax();
 
-    void UpdateBindingMapOnce(const ColumnBinding old_binding, const ColumnBinding new_binding);
+	void UpdateSum();
 
-    void UpdateBindingMap(const ColumnBinding old_binding, const ColumnBinding new_binding);
+	void UpdateBindingMapOnce(const ColumnBinding old_binding, const ColumnBinding new_binding);
+
+	void UpdateBindingMap(const ColumnBinding old_binding, const ColumnBinding new_binding);
 
     ColumnBinding GetUpdatedBindingOnce(const ColumnBinding& original);
 
@@ -186,22 +196,22 @@ public:
 
     void AddAlias(const string& alias);
 
-    bool HasAlias(const string& alias) const;
+	bool HasAlias(const string &alias) const;
 
-    size_t GetAliasCount() const;
-    
+	size_t GetAliasCount() const;
 
 private:
-    //! Aggregation pushdown intentionally supports a narrow logical-plan shape.
-    //! Keep this check local as a final defense against callers classifying a
-    //! wrapper, grouping-set, or complex aggregate as a supported Yan+ query.
-    bool IsSupportedRootShape(const LogicalOperator* op) const;
+	//! Aggregation pushdown intentionally supports a narrow logical-plan shape.
+	//! Keep this check local as a final defense against callers classifying a
+	//! wrapper, grouping-set, or complex aggregate as a supported Yan+ query.
+	bool IsSupportedRootShape(const LogicalOperator *op) const;
+	unique_ptr<LogicalOperator> PropagateCountAnnotations(unique_ptr<LogicalOperator> op);
 
-    Binder &binder;
-    ClientContext &context;
-    QueryType query_type;
+	Binder &binder;
+	ClientContext &context;
+	QueryType query_type;
 
-    int current_join_id = 0;
+	int current_join_id = 0;
     int join_counter = 0;
 
     std::unordered_map<ColumnBinding, ColumnBinding, ColumnBindingHashFunction> global_binding_map;

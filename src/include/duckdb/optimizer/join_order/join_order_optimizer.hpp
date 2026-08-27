@@ -25,7 +25,8 @@ namespace duckdb {
 
 class JoinOrderOptimizer {
 public:
-	explicit JoinOrderOptimizer(ClientContext &context, bool GYO = false, bool enable_cyclic_bags = true);
+	explicit JoinOrderOptimizer(ClientContext &context, bool GYO = false, bool enable_cyclic_bags = true,
+	                            bool prefer_two_cyclic_bag_plan = false);
 	JoinOrderOptimizer CreateChildOptimizer();
 
 public:
@@ -44,6 +45,9 @@ public:
 	}
 	bool InsertedPlanDerivedGHDBag() const {
 		return inserted_plan_derived_ghd_bag;
+	}
+	bool SelectedTwoCyclicBagPlan() const {
+		return selected_two_cyclic_bag_plan;
 	}
 
 	const QueryGraphEdges &GetQueryGraphEdges() const {
@@ -70,8 +74,10 @@ private:
 
 	bool GYO;
 	bool enable_cyclic_bags;
+	bool prefer_two_cyclic_bag_plan;
 	bool detected_cyclic_query = false;
 	bool inserted_plan_derived_ghd_bag = false;
+	bool selected_two_cyclic_bag_plan = false;
 
 	//! Mapping from materialized CTE index to stats
 	unordered_map<idx_t, RelationStats> materialized_cte_stats;
