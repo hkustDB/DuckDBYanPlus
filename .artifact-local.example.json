@@ -1,0 +1,5 @@
+{
+  "benchmark_workbook": "/path/to/DuckYan_1_5_results.xlsx",
+  "semijoin_comparison_results": "/path/to/semijoin_comparison_results.csv",
+  "semijoin_cache_results": "/path/to/semijoin_cache_results.csv"
+}

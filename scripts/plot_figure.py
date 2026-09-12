@@ -25,6 +25,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
+from artifact_local import configured_path
+
 
 if "MPLCONFIGDIR" not in os.environ:
     _matplotlib_cache = Path(tempfile.gettempdir()) / "duckdb-v15-matplotlib"
@@ -44,12 +46,8 @@ from matplotlib.ticker import FuncFormatter
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_WORKBOOK_PATH = (
-    Path.home()
-    / "Library"
-    / "CloudStorage"
-    / "OneDrive-HKUSTConnect"
-    / "DuckYan_1_5_results.xlsx"
+DEFAULT_WORKBOOK_PATH = configured_path(
+    "benchmark_workbook", REPOSITORY_ROOT / "DuckYan_1_5_results.xlsx"
 )
 DEFAULT_OUTPUT_DIR = REPOSITORY_ROOT / "figures" / "duckdb_v1_5"
 
@@ -121,6 +119,20 @@ WORKBOOK_COLUMN_SERIES = {
     "YanPlus": YANPLUS,
 }
 
+# Result worksheets may include aggregate statistics below the query rows.
+# These labels are metadata, not benchmark query identifiers.
+WORKBOOK_SUMMARY_ROWS = {
+    "min",
+    "max",
+    "mean",
+    "median",
+    "std",
+    "std.dev",
+    "stddev",
+    "geomean",
+    "geometric mean",
+}
+
 
 def workbook_sheet_rows(
     path: Path, sheet_name: str
@@ -164,6 +176,8 @@ def workbook_sheet_rows(
         if raw_query is None or not str(raw_query).strip():
             continue
         query = standard_query(str(raw_query), path)
+        if query in WORKBOOK_SUMMARY_ROWS:
+            continue
         if query in seen_queries:
             raise ValueError(
                 f"duplicate query {raw_query!r} at {path}/{sheet_name}!A{row_number}"

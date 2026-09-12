@@ -448,11 +448,19 @@ mask.
 ### Plot the DuckDB v1.5 results
 
 The benchmark plotting script reads every plotted runtime from one workbook.
-Its default source is:
+Machine-local input paths can be stored in `.artifact-local.json`, which is
+ignored by Git. Start from the anonymous example and edit only the ignored
+copy:
 
-```text
-~/Library/CloudStorage/OneDrive-HKUSTConnect/DuckYan_1_5_results.xlsx
+```sh
+cp .artifact-local.example.json .artifact-local.json
 ```
+
+The supported keys are `benchmark_workbook`, `semijoin_comparison_results`,
+and `semijoin_cache_results`. Values may be absolute paths or paths relative
+to the repository root. Without a local config, the scripts use the matching
+input filename in the repository root. Explicit `--workbook` and `--input`
+arguments always override these defaults.
 
 The workbook contains `graph`, `lsqb`, `tpch`, `dsbagg`, `dsbspj`, and `job`
 sheets. In each sheet, the first column lists query names and the remaining
@@ -467,8 +475,8 @@ DSB figures with:
 python3 scripts/plot_figure.py
 ```
 
-Generate the Q5 Bloom-versus-Hash runtime figure from
-`~/Desktop/TODS revision/semijoin_comparison_results.csv` with:
+Generate the Q5 Bloom-versus-Hash runtime figure from the configured comparison
+CSV with:
 
 ```sh
 python3 scripts/plot_semijoin_comparison.py

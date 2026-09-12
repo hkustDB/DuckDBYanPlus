@@ -420,6 +420,17 @@ def validate_plans(
     return rows, timing_eligible
 
 
+def metadata_path(path: pathlib.Path, external_label: str) -> str:
+    """Represent a local path without recording machine-specific directories."""
+
+    resolved = path.expanduser().resolve()
+    try:
+        relative = resolved.relative_to(REPOSITORY_ROOT.resolve())
+    except ValueError:
+        return f"<external:{external_label}>"
+    return f"<repository>/{relative.as_posix()}"
+
+
 def write_metadata(
     output_directory: pathlib.Path,
     args: argparse.Namespace,
@@ -430,9 +441,12 @@ def write_metadata(
 ) -> None:
     metadata = {
         "started_at_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        "duckdb": str(executable),
+        "duckdb": metadata_path(executable, "duckdb-binary"),
         "duckdb_version": version,
-        "databases": {suite: str(path) for suite, path in databases.items()},
+        "databases": {
+            suite: metadata_path(path, f"{suite}-database")
+            for suite, path in databases.items()
+        },
         "threads": args.threads,
         "cpu_list": args.cpu_list,
         "repetitions": args.repetitions,

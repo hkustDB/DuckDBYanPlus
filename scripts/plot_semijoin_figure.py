@@ -11,6 +11,8 @@ import tempfile
 from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
+from artifact_local import configured_path
+
 
 if "MPLCONFIGDIR" not in os.environ:
     _matplotlib_cache = Path(tempfile.gettempdir()) / "duckdb-v15-matplotlib"
@@ -30,11 +32,12 @@ from matplotlib.ticker import FuncFormatter
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_COMPARISON_INPUT = (
-    Path.home() / "Desktop" / "TODS revision" / "semijoin_comparison_results.csv"
+DEFAULT_COMPARISON_INPUT = configured_path(
+    "semijoin_comparison_results",
+    REPOSITORY_ROOT / "semijoin_comparison_results.csv",
 )
-DEFAULT_CACHE_INPUT = (
-    Path.home() / "Desktop" / "TODS revision" / "semijoin_cache_results.csv"
+DEFAULT_CACHE_INPUT = configured_path(
+    "semijoin_cache_results", REPOSITORY_ROOT / "semijoin_cache_results.csv"
 )
 DEFAULT_OUTPUT_DIR = REPOSITORY_ROOT / "figures" / "duckdb_v1_5"
 STANDALONE_FIGURE_SIZE = (7.4, 4.7)

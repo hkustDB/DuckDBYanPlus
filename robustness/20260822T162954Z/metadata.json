@@ -1,10 +1,10 @@
 {
   "cpu_list": "0-31,36-67",
   "databases": {
-    "job": "/home/data/bchenba/dynamic-predicate-transfer/job_db",
-    "lsqb": "/home/data/bchenba/dynamic-predicate-transfer/lsqb_db"
+    "job": "<external:job-database>",
+    "lsqb": "<external:lsqb-database>"
   },
-  "duckdb": "/home/data/bchenba/DuckDBYanPlus/build/duckdb_origin/duckdb",
+  "duckdb": "<repository>/build/duckdb_origin/duckdb",
   "duckdb_version": "v1.5.0-yanplus",
   "execution_design": "one fresh DuckDB process per plan per repetition; globally shuffled blocks",
   "logical_cpu_count": 72,

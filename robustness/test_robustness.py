@@ -85,6 +85,19 @@ create or replace view v as select ';' AS value;
         output = "Run Time (s): real 0.123456 user 0.1 sys 0.0"
         self.assertEqual(run_experiment.TIMER_PATTERN.findall(output), ["0.123456"])
 
+    def test_metadata_paths_do_not_expose_machine_directories(self) -> None:
+        repository_path = run_experiment.REPOSITORY_ROOT / "build/duckdb_origin/duckdb"
+        self.assertEqual(
+            run_experiment.metadata_path(repository_path, "duckdb-binary"),
+            "<repository>/build/duckdb_origin/duckdb",
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            external_path = pathlib.Path(temporary) / "private" / "job_db"
+            self.assertEqual(
+                run_experiment.metadata_path(external_path, "job-database"),
+                "<external:job-database>",
+            )
+
     def test_timed_query_preparation_is_python_38_compatible(self) -> None:
         plan = run_experiment.Plan(
             suite="test",
